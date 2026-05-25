@@ -1,0 +1,37 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-macos:
+    name: Build (macOS Universal)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Verify Universal Binary
+        run: ./Scripts/verify_universal_binary.sh
+
+      - name: Upload VST3 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Worldizer-VST3
+          path: build/Worldizer_artefacts/Release/VST3/Worldizer.vst3
+          if-no-files-found: error
+
+# Note: pluginval is intentionally not run in CI yet — it needs a GUI environment
+# that headless runners don't provide without extra setup. Run it locally:
+#   pluginval --strictness-level 10 --validate <path-to>/Worldizer.vst3
