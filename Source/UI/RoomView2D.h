@@ -3,7 +3,7 @@
 #include <JuceHeader.h>
 #include "../Model/Scene.h"
 
-namespace wz
+namespace Worldizer
 {
 /**
     Top-down 2D view of the current scene. Paints brushes as outlines and the
@@ -35,4 +35,4 @@ private:
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (RoomView2D)
 };
-} // namespace wz
+} // namespace Worldizer

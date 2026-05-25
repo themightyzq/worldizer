@@ -1,27 +1,73 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <array>
+#include "../Shared/Vec3.h"
+#include "Material.h"
 
-namespace wz
+namespace Worldizer
 {
 /**
-    The atomic unit of scene geometry: a convex volume with a per-brush material.
-    MVP brushes are axis-aligned boxes (min/max corners in metres). Later slices
-    may generalise to arbitrary convex hulls (the .map importer produces these).
+    A convex 3D volume defined by axis-aligned bounds + per-face material.
 
-    Additive brushes are solid and contribute reflections; subtractive brushes
-    carve negative space out of additive brushes.
+    For MVP, only axis-aligned boxes are supported. Test-scene rooms are built
+    from thin slab brushes (one per surface); rays travel the interior and
+    reflect off the room-facing face, whose outward normal points into the room.
+    Future versions will support arbitrary convex polyhedra (the .map importer).
 */
-struct Brush
+class Brush
 {
-    enum class Kind { additive, subtractive };
+public:
+    enum class Face { NegX, PosX, NegY, PosY, NegZ, PosZ };
+    static constexpr int kNumFaces = 6;
 
+    enum class Kind { Additive, Subtractive };
+
+    Brush() = default;
+    Brush (juce::String id,
+           Vec3 minCorner,
+           Vec3 maxCorner,
+           Kind kind = Kind::Additive);
+
+    const juce::String& getId() const noexcept   { return id; }
+    Kind getKind() const noexcept                { return kind; }
+    Vec3 getMin() const noexcept                 { return minCorner; }
+    Vec3 getMax() const noexcept                 { return maxCorner; }
+
+    /** Returns the centre point of the brush. */
+    Vec3 getCenter() const noexcept;
+
+    /** Returns the material assigned to a specific face. */
+    const Material& getFaceMaterial (Face face) const noexcept { return faceMaterials[(size_t) face]; }
+
+    /** Assign a material to a specific face. */
+    void setFaceMaterial (Face face, Material m);
+
+    /** Assign the same material to all faces. */
+    void setAllFaceMaterials (Material m);
+
+    // === Ray intersection ===
+
+    /** Slab-method ray-box intersection. Returns true if the ray hits the brush.
+        On hit, sets t (distance along ray, direction assumed unit), hitPoint,
+        normal (pointing out of the brush), and face. Only returns hits where
+        t >= tMin. */
+    bool intersect (Vec3 origin,
+                    Vec3 direction,
+                    float tMin,
+                    float& t,
+                    Vec3& hitPoint,
+                    Vec3& normal,
+                    Face& face) const noexcept;
+
+    /** Returns true if the given point is inside the brush volume. */
+    bool contains (Vec3 point) const noexcept;
+
+private:
     juce::String id;
-    Kind kind = Kind::additive;
-
-    juce::Vector3D<float> min {}; // metres
-    juce::Vector3D<float> max {}; // metres
-
-    juce::String material;        // material id (see Material / materials.json)
+    Vec3 minCorner;
+    Vec3 maxCorner;
+    Kind kind = Kind::Additive;
+    std::array<Material, kNumFaces> faceMaterials;
 };
-} // namespace wz
+} // namespace Worldizer

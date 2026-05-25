@@ -3,7 +3,7 @@
 #include <JuceHeader.h>
 #include "../Model/Scene.h"
 
-namespace wz
+namespace Worldizer
 {
 /**
     Closed-form image-source method for low-order specular reflections. Faster and
@@ -29,4 +29,4 @@ public:
 private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ImageSourceSolver)
 };
-} // namespace wz
+} // namespace Worldizer

@@ -1,37 +1,56 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <vector>
+#include <utility>
+#include "../Shared/Vec3.h"
 #include "Brush.h"
 #include "SourceNode.h"
 #include "MicNode.h"
 
-namespace wz
+namespace Worldizer
 {
 /**
-    Top-level geometry container: brushes, sources, mic(s), ambient bed
-    reference, and room bounds. Serialises to/from the geometry.json portion of
-    a .wzpreset bundle (see Docs/architecture.md §4 and WzPresetIO).
-
-    Slice 1/3 implement the geometry math and JSON (de)serialisation.
+    Top-level container for a worldizing scene: brushes plus a source and a mic.
+    Slice 1 uses hardcoded scenes (see TestScenes); JSON (de)serialisation and
+    multi-mic arrays arrive in later slices.
 */
-struct Scene
+class Scene
 {
-    struct Bounds
-    {
-        juce::Vector3D<float> min {}; // metres
-        juce::Vector3D<float> max {}; // metres
-    };
+public:
+    Scene() = default;
 
-    Bounds bounds;
-    std::vector<Brush>      brushes;
-    std::vector<SourceNode> sources;
-    std::vector<MicNode>    mics;
-    juce::String            ambientBed; // room-tone file reference (see metadata.json)
+    // === Brushes ===
+    void addBrush (Brush brush);
+    const std::vector<Brush>& getBrushes() const noexcept   { return brushes; }
+    size_t getNumBrushes() const noexcept                   { return brushes.size(); }
 
-    /** Serialise to a juce::var matching the geometry.json schema. */
-    juce::var toVar() const;
+    // === Source & mic ===
+    SourceNode& getSource() noexcept                        { return source; }
+    const SourceNode& getSource() const noexcept            { return source; }
 
-    /** Parse from a juce::var produced by reading geometry.json. */
-    static Scene fromVar (const juce::var& v);
+    MicNode& getMic() noexcept                              { return mic; }
+    const MicNode& getMic() const noexcept                  { return mic; }
+
+    // === Bounds ===
+    /** Returns the axis-aligned bounding box (min, max) of all brushes. */
+    std::pair<Vec3, Vec3> getBounds() const noexcept;
+
+    // === Ray testing against all brushes ===
+    /** Finds the closest brush hit for a ray. Returns true if any hit. Outputs the
+        hit brush index, distance, hit point, outward normal, and face. */
+    bool intersect (Vec3 origin,
+                    Vec3 direction,
+                    float tMin,
+                    int& brushIndex,
+                    float& t,
+                    Vec3& hitPoint,
+                    Vec3& normal,
+                    Brush::Face& face) const noexcept;
+
+private:
+    std::vector<Brush> brushes;
+    SourceNode source;
+    MicNode mic;
 };
-} // namespace wz
+} // namespace Worldizer

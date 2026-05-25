@@ -2,7 +2,7 @@
 
 #include <JuceHeader.h>
 
-namespace wz
+namespace Worldizer
 {
 /**
     Wraps juce::dsp::Convolution for the audio thread. Supports loading a new IR
@@ -33,4 +33,4 @@ public:
 private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ConvolutionEngine)
 };
-} // namespace wz
+} // namespace Worldizer

@@ -63,23 +63,34 @@ target_sources(Worldizer
 
         # --- Shared ---
         Source/Shared/Constants.h
+        Source/Shared/Vec3.h
         Source/Shared/WorldizerLookAndFeel.h
 
-        # --- Model (stubs) ---
+        # --- Model ---
         Source/Model/Brush.h
+        Source/Model/Brush.cpp
         Source/Model/Material.h
+        Source/Model/Material.cpp
         Source/Model/MicNode.h
+        Source/Model/MicNode.cpp
         Source/Model/Scene.h
+        Source/Model/Scene.cpp
         Source/Model/SourceNode.h
+        Source/Model/SourceNode.cpp
+        Source/Model/TestScenes.h
+        Source/Model/TestScenes.cpp
 
-        # --- DSP (stubs) ---
+        # --- DSP (engine: RayTracer/IRBuilder/AirAbsorption implemented; rest stubs) ---
         Source/DSP/AirAbsorption.h
+        Source/DSP/AirAbsorption.cpp
         Source/DSP/AmbientBed.h
         Source/DSP/ConvolutionEngine.h
         Source/DSP/ImageSourceSolver.h
         Source/DSP/IRBuilder.h
+        Source/DSP/IRBuilder.cpp
         Source/DSP/MicCharacter.h
         Source/DSP/RayTracer.h
+        Source/DSP/RayTracer.cpp
         Source/DSP/SourceCharacter.h
 
         # --- IO (stubs) ---
@@ -120,5 +131,44 @@ target_link_libraries(Worldizer
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
+        juce::juce_recommended_warning_flags
+)
+
+# === Slice 1: headless ray-tracer CLI tool ===
+# Builds the acoustics engine into a standalone console app for offline IR
+# rendering and validation. Uses Worldizer::Vec3 (not juce::Vector3D) so it does
+# not need juce_opengl — keeping the engine core JUCE-light and the tool headless.
+juce_add_console_app(RenderTestScene
+    PRODUCT_NAME "RenderTestScene")
+
+juce_generate_juce_header(RenderTestScene)
+
+target_sources(RenderTestScene
+    PRIVATE
+        Tests/render_test_scene.cpp
+        Source/Model/Material.cpp
+        Source/Model/Brush.cpp
+        Source/Model/SourceNode.cpp
+        Source/Model/MicNode.cpp
+        Source/Model/Scene.cpp
+        Source/Model/TestScenes.cpp
+        Source/DSP/RayTracer.cpp
+        Source/DSP/IRBuilder.cpp
+        Source/DSP/AirAbsorption.cpp
+)
+
+target_compile_definitions(RenderTestScene
+    PRIVATE
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+)
+
+target_link_libraries(RenderTestScene
+    PRIVATE
+        juce::juce_audio_formats
+        juce::juce_audio_basics
+        juce::juce_core
+        juce::juce_dsp
+        juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags
 )

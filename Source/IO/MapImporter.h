@@ -3,7 +3,7 @@
 #include <JuceHeader.h>
 #include "../Model/Scene.h"
 
-namespace wz
+namespace Worldizer
 {
 /**
     Imports TrenchBroom-authored Quake .map files. Parses brush geometry, maps
@@ -25,4 +25,4 @@ public:
     /** Parse a .map file into a Scene. Returns false on parse failure. */
     static bool importMap (const juce::File& mapFile, Scene& out, const Options& options = {});
 };
-} // namespace wz
+} // namespace Worldizer

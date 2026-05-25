@@ -1,28 +1,36 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "../Shared/Constants.h"
+#include <array>
+#include "../Model/Material.h"
 
-namespace wz
+namespace Worldizer
 {
 /**
-    Distance-dependent high-frequency rolloff (a simplified ITU-R P.676 air
-    absorption model). Applied per reflection path during IR building.
-
-    Parametrised by distance, temperature, and humidity. MVP uses sensible
-    defaults; temperature/humidity are exposed in v2.
-
-    Slice 1 implements the per-band attenuation coefficients.
+    Distance-dependent atmospheric absorption. Simplified model (a lookup table
+    of dB/100 m per octave band) standing in for the full ISO 9613-1 / ITU-R P.676
+    formula, which is a v1.0 refinement. Temperature and humidity are accepted for
+    API stability but ignored in this simplified version.
 */
 class AirAbsorption
 {
 public:
-    AirAbsorption() = default;
+    /** Absorption coefficient (dB/m) at a given band centre frequency. */
+    static float getAbsorptionPerMeter (float frequencyHz,
+                                         float temperatureCelsius,
+                                         float relativeHumidity);
 
-    /** Per-band attenuation (linear gain, 0..1) for a path of the given length. */
-    std::array<float, (size_t) Worldizer::kIRBands>
-        attenuationForDistance (float metres,
-                                float temperatureC = 20.0f,
-                                float humidityPct  = 50.0f) const;
+    /** Broadband amplitude factor (0..1) for a distance and band:
+        10^(-absorption_dB_per_m * distance / 20). */
+    static float getAmplitudeFactor (int band,
+                                     float distanceMeters,
+                                     float temperatureCelsius = 20.0f,
+                                     float relativeHumidity = 50.0f);
+
+    /** All 8 band amplitude factors for a given distance. */
+    static std::array<float, Material::kNumBands>
+        getAllBandFactors (float distanceMeters,
+                           float temperatureCelsius = 20.0f,
+                           float relativeHumidity = 50.0f);
 };
-} // namespace wz
+} // namespace Worldizer

@@ -1,20 +1,28 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "../Shared/Vec3.h"
 
-namespace wz
+namespace Worldizer
 {
 /**
-    A sound source within a Scene — the reproducer (speaker) the input audio is
-    "played through". Carries position, orientation, and the selected speaker
-    character (an id into the speaker IR library).
+    A sound source in the scene. For MVP, sources are omnidirectional; directivity
+    patterns come in v1.0.
 */
-struct SourceNode
+class SourceNode
 {
-    juce::Vector3D<float> position {}; // metres
-    float yaw   = 0.0f;                // degrees
-    float pitch = 0.0f;                // degrees
+public:
+    SourceNode() = default;
+    explicit SourceNode (Vec3 position);
 
-    juce::String speakerCharacter;     // id into Resources/Speakers
+    Vec3 getPosition() const noexcept       { return position; }
+    void setPosition (Vec3 p) noexcept      { position = p; }
+
+    /** Returns a unit direction for ray emission (omnidirectional for MVP).
+        `random` is the RNG used for stochastic sampling. */
+    Vec3 sampleEmissionDirection (juce::Random& random) const noexcept;
+
+private:
+    Vec3 position { 0.0f, 0.0f, 1.5f };  // 1.5 m off the ground by default
 };
-} // namespace wz
+} // namespace Worldizer

@@ -1,25 +1,51 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "../Shared/Constants.h"
+#include <array>
 
-namespace wz
+namespace Worldizer
 {
 /**
-    A surface material: frequency-dependent absorption plus a scattering
-    coefficient. The canonical material library lives in
-    Resources/Materials/materials.json (see Docs/materials_reference.md).
+    Frequency-dependent acoustic material properties.
 
-    Slice 1 fills in band centre frequencies and JSON (de)serialisation.
+    Absorption is per octave band (8 bands matching kIRBands). Scattering is
+    broadband (0.0 = fully specular, 1.0 = fully diffuse). The static factory
+    methods produce plausible values based on published acoustic tables; the
+    canonical, measured library arrives in Slice 9 (Resources/Materials/materials.json).
 */
-struct Material
+class Material
 {
-    juce::String name;
+public:
+    static constexpr int kNumBands = 8;
+    // Band centre frequencies (Hz): 62.5, 125, 250, 500, 1000, 2000, 4000, 8000
 
-    /** Per-band absorption, 0.0 (perfectly reflective) .. 1.0 (perfectly absorptive). */
-    std::array<float, (size_t) Worldizer::kIRBands> absorption {};
+    Material() = default;
+    Material (const juce::String& name,
+              std::array<float, kNumBands> absorption,
+              float scattering);
 
-    /** Scattering: 0.0 = fully specular, 1.0 = fully diffuse. */
-    float scattering = 0.0f;
+    const juce::String& getName() const noexcept                       { return name; }
+    float getAbsorption (int band) const noexcept                      { return absorption[(size_t) band]; }
+    const std::array<float, kNumBands>& getAbsorption() const noexcept { return absorption; }
+    float getScattering() const noexcept                               { return scattering; }
+
+    /** Returns the reflection coefficient (1 - absorption) per band, clamped to [0, 1]. */
+    std::array<float, kNumBands> getReflection() const noexcept;
+
+    // === Standard materials for hardcoded scenes ===
+    static Material concrete();    // very low absorption, low scattering
+    static Material drywall();     // mid absorption (bass panel loss), low scattering
+    static Material woodFloor();   // mid-low absorption, low scattering
+    static Material carpet();      // high absorption above 500Hz, medium scattering
+    static Material curtain();     // very high absorption, high scattering
+    static Material glass();       // very low absorption, very low scattering
+    static Material foliage();     // mid absorption, very high scattering
+    static Material gravel();      // mid absorption, high scattering
+    static Material openAir();     // 1.0 absorption (ray dies on contact) — "no surface here"
+
+private:
+    juce::String name { "default" };
+    std::array<float, kNumBands> absorption { { 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f } };
+    float scattering = 0.1f;
 };
-} // namespace wz
+} // namespace Worldizer

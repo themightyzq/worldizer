@@ -2,7 +2,7 @@
 
 #include <JuceHeader.h>
 
-namespace wz
+namespace Worldizer
 {
 /**
     The microphone character: convolution with a selected mic IR plus an optional
@@ -31,4 +31,4 @@ public:
 private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MicCharacter)
 };
-} // namespace wz
+} // namespace Worldizer

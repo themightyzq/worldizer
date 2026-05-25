@@ -14,18 +14,18 @@ This document tracks development slices for Worldizer. Each slice ends with a bu
 
 **Goal:** Buildable scaffold with all foundational documents and source stubs. No DSP, no UI beyond a placeholder.
 
-- [ ] Repository structure created per `CLAUDE.md` §6
-- [ ] `CLAUDE.md`, `README.md`, `TODO.md`, `LICENSE`, `CONTRIBUTING.md` complete
-- [ ] `Docs/architecture.md` complete
-- [ ] `CMakeLists.txt` with correct plugin metadata, compile defs, formats
-- [ ] JUCE 8.x added as git submodule
-- [ ] All source stubs in place with API outlines (headers) and minimal bodies (`.cpp` where needed)
-- [ ] `PluginProcessor` passes audio through silently with bypass parameter
-- [ ] `PluginEditor` shows a placeholder ("Worldizer v0.0.1 — scaffold")
-- [ ] GitHub Actions workflow exists for macOS Universal Binary builds
-- [ ] `.gitignore`, issue templates, PR template in place
-- [ ] `cmake -B build && cmake --build build` succeeds clean
-- [ ] Plugin passes `pluginval --strictness-level 10`
+- [x] Repository structure created per `CLAUDE.md` §6
+- [x] `CLAUDE.md`, `README.md`, `TODO.md`, `LICENSE`, `CONTRIBUTING.md` complete
+- [x] `Docs/architecture.md` complete
+- [x] `CMakeLists.txt` with correct plugin metadata, compile defs, formats
+- [x] JUCE 8.x added as git submodule (pinned to 8.0.12)
+- [x] All source stubs in place with API outlines (headers) and minimal bodies (`.cpp` where needed)
+- [x] `PluginProcessor` passes audio through silently with bypass parameter
+- [x] `PluginEditor` shows a placeholder ("Worldizer v0.0.1 — scaffold")
+- [x] GitHub Actions workflow exists for macOS Universal Binary builds
+- [x] `.gitignore`, issue templates, PR template in place
+- [x] `cmake -B build && cmake --build build` succeeds clean
+- [x] Plugin passes `pluginval --strictness-level 10`
 
 **Acceptance:** A user can clone the repo, init submodules, run cmake, build, and load the plugin in a DAW. The plugin loads, passes audio, doesn't crash, has no audible processing.
 
@@ -35,16 +35,35 @@ This document tracks development slices for Worldizer. Each slice ends with a bu
 
 **Goal:** Working ray tracer that produces sensible IRs from a hardcoded scene.
 
-- [ ] `RayTracer.h/cpp` — emit N rays from a source, bounce off scene primitives, accumulate energy histogram per frequency band
-- [ ] `Brush.h/cpp` — convex 3D volume with per-face material
-- [ ] `Material.h/cpp` — frequency-dependent absorption (8 bands) and scattering coefficient
-- [ ] `Scene.h/cpp` — collection of brushes + source + mic(s)
-- [ ] `IRBuilder.h/cpp` — convert ray-tracer energy histogram to a stereo IR (impulse train per band, summed)
-- [ ] `AirAbsorption.h/cpp` — distance-dependent HF rolloff (ITU-R P.676 simplified)
-- [ ] Headless test program (in `Tests/`) that loads a hardcoded shoebox scene, runs the ray tracer, writes the IR to a WAV file
-- [ ] Validate IRs are sensible: direct sound at correct delay, reflections at correct times, energy decay matches geometry
+- [x] `RayTracer.h/cpp` — emit N rays from a source, bounce off scene primitives, accumulate energy histogram per frequency band
+- [x] `Brush.h/cpp` — axis-aligned box (slab-method ray intersection) with per-face material
+- [x] `Material.h/cpp` — frequency-dependent absorption (8 bands) and scattering coefficient
+- [x] `Scene.h/cpp` — collection of brushes + source + mic
+- [x] `IRBuilder.h/cpp` — convert ray-tracer energy histogram to a **mono** IR (band energies summed, air-weighted, noise-shaped). Stereo deferred (Slice 1 scope is mono)
+- [x] `AirAbsorption.h/cpp` — distance-dependent HF rolloff (simplified dB/100m table; full ISO 9613-1 is a v1.0 refinement)
+- [x] Headless test program (`Tests/render_test_scene.cpp` → `RenderTestScene`) that builds a hardcoded scene, runs the ray tracer, writes the IR to a WAV file
+- [x] Validate IRs are sensible: direct sound at correct delay, reflections at correct times, energy decay matches geometry
+- [x] Engine also links into the plugin target (plugin unchanged, still silent pass-through)
 
-**Acceptance:** Running the test program produces a WAV file. Listening to a click convolved with the WAV produces a believable room impulse. Reflection times match hand-calculated values for a simple box.
+**Acceptance:** Running the test program produces a WAV file. Listening to a click convolved with the WAV produces a believable room impulse. Reflection times match hand-calculated values for a simple box. **Met:** direct = sample 280 (exact), floor bounce = sample 504 (hand-calc 505), decay ordering anechoic < forest < small room < hallway < gymnasium, determinism bit-identical, gym 20k-ray trace 0.05s.
+
+### Slice 1 retrospective
+
+**What worked**
+- Geometry/timing is exact: direct and first-reflection arrival times match hand calculations to the sample. Decay times scale correctly with room size and absorption.
+- Determinism (seeded `juce::Random`) gives bit-identical WAVs for re-runs — useful for regression testing.
+- Performance is far inside budget: 20k rays trace in ~0.05s, 200k in ~0.5s (no BVH needed yet).
+- The principled reflection normalization (`2/micRadius · √(E/numRays)`) puts reflections on the same physical scale as the `1/d` direct sound.
+
+**Harder / surprising**
+- `juce::Vector3D` lives in `juce_opengl`, which would drag the GUI stack into the headless tool. Used a small `Worldizer::Vec3` instead (matches the architecture's "pure C++ core" goal). All engine types unified under the `Worldizer` namespace.
+- **Specular early reflections over-spike.** With low-scattering surfaces (concrete/glass), many rays focus into one time bin, so the first floor bounce reads ~12 dB louder than the `1/path` law predicts — it even exceeds the direct in the small room. This is the known limitation of pure stochastic ray tracing for low-order specular reflections.
+- The 10 cm mic + 20k rays under-samples large/open scenes (gym ~37 hits, forest 0). Hit count scales linearly with rays (200k → gym 395, forest 27), so it's sampling density, not a bug. IRs are noticeably cleaner at 100k–200k rays.
+
+**Deferred (to Slice 1.5 / 2 / later)**
+- `ImageSourceSolver` — handles orders 1–3 specular accurately and will fix the early-reflection over-spike (hybrid ISM + ray tracing per the architecture).
+- Per-band noise-filtered IR reconstruction (Slice 1 uses the pragmatic broadband-energy-per-bin shortcut, which is correct in energy but not spectrally detailed).
+- Statistical late-tail synthesis; stereo / multi-mic IRs; JSON scene loading; larger default mic radius or adaptive ray counts for big/open scenes.
 
 ---
 

@@ -2,7 +2,7 @@
 
 #include <JuceHeader.h>
 
-namespace wz
+namespace Worldizer
 {
 /**
     Categorised, searchable list of available presets with click-to-load (and
@@ -25,4 +25,4 @@ public:
 private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PresetBrowser)
 };
-} // namespace wz
+} // namespace Worldizer

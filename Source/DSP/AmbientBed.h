@@ -2,7 +2,7 @@
 
 #include <JuceHeader.h>
 
-namespace wz
+namespace Worldizer
 {
 /**
     Looped playback of a recorded room-tone WAV with a seamless crossfade at the
@@ -31,4 +31,4 @@ public:
 private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AmbientBed)
 };
-} // namespace wz
+} // namespace Worldizer

@@ -3,7 +3,7 @@
 #include <JuceHeader.h>
 #include "../Model/Scene.h"
 
-namespace wz
+namespace Worldizer
 {
 /**
     Reads and writes .wzpreset bundles (see Docs/architecture.md §4):
@@ -47,4 +47,4 @@ public:
     /** Write a preset bundle to disk. */
     static bool save (const juce::File& bundle, const Preset& preset);
 };
-} // namespace wz
+} // namespace Worldizer

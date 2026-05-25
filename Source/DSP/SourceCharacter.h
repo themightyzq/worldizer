@@ -2,7 +2,7 @@
 
 #include <JuceHeader.h>
 
-namespace wz
+namespace Worldizer
 {
 /**
     The reproducer (speaker) character: convolution with a selected speaker IR
@@ -32,4 +32,4 @@ public:
 private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SourceCharacter)
 };
-} // namespace wz
+} // namespace Worldizer
