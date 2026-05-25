@@ -9,14 +9,17 @@ namespace Worldizer
 /**
     Builds a time-domain mono impulse response from ray-tracer output.
 
-    The direct sound is written as a deterministic impulse (amplitude 1/distance);
-    reflections are reconstructed from the per-band energy histogram as a
-    noise-shaped decay, calibrated to the direct sound's scale. Air absorption is
-    baked in. The output is peak-normalised to -1 dBFS.
+    Reconstruction (standard auralization method): for each octave band, the
+    per-bin energy histogram is smoothed into an energy-vs-time envelope; a shared
+    white-noise carrier is band-pass filtered to that octave, normalised to unit
+    RMS, then amplitude-modulated by sqrt(energy density). Summing the bands gives
+    a dense, spectrally-shaped decay where HF dies away faster than LF (each band
+    carries its own decay), instead of a flat broadband noise burst. Air absorption
+    is folded into each band's energy. The direct sound is added as a clean impulse
+    (amplitude 1/distance). Output is peak-normalised to -1 dBFS.
 
-    Slice 1 uses the pragmatic broadband reconstruction (one shaped sample per bin
-    from the summed, air-weighted band energies); proper per-band noise filtering
-    is a documented follow-up if the result sounds too coloured.
+    Early reflections are currently part of the diffuse envelope; discrete early
+    reflections (image-source method) are the next refinement.
 */
 class IRBuilder
 {
@@ -30,6 +33,7 @@ public:
         float relativeHumidity = 50.0f;
         bool  includeDirect = true;
         float directGainCompensation = 1.0f;
+        float envelopeMs = 6.0f; // energy-envelope smoothing window (diffuse-field time resolution)
     };
 
     IRBuilder() = default;
