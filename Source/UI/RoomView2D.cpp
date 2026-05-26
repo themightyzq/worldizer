@@ -141,6 +141,16 @@ namespace
             // Mic: cyan with amber ring.
             drawIcon (g, micP, 7.0f, Colors::micIcon, Colors::primary,
                       hovered == RoomView2D::Target::Mic || active == RoomView2D::Target::Mic);
+
+            // "S" / "M" labels under the icons (skip in small thumbnails).
+            if (area.getWidth() > 200.0f)
+            {
+                g.setFont (juce::Font (juce::FontOptions (11.0f).withStyle ("Bold")));
+                g.setColour (Colors::sourceIcon);
+                g.drawText ("S", juce::Rectangle<float> (srcP.x - 12.0f, srcP.y + 9.0f, 24.0f, 14.0f), juce::Justification::centred);
+                g.setColour (Colors::micIcon);
+                g.drawText ("M", juce::Rectangle<float> (micP.x - 12.0f, micP.y + 8.0f, 24.0f, 14.0f), juce::Justification::centred);
+            }
         }
 
         // Scale indicator (bottom-left): a 1 m bar.
