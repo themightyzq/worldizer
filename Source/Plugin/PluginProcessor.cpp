@@ -5,6 +5,47 @@
 
 using namespace Worldizer;
 
+namespace
+{
+    // Normalises a mono buffer to a target RMS measured over its ACTIVE region
+    // (samples above -26 dB of the peak). This matches perceived loudness across
+    // signals of different density — sparse clicks vs. a sustained sweep/noise —
+    // far better than peak normalisation would. A peak ceiling prevents clipping.
+    void normalizeActiveRms (juce::AudioBuffer<float>& b, float targetRms, float peakCeiling)
+    {
+        if (b.getNumSamples() <= 0)
+            return;
+
+        auto* d = b.getWritePointer (0);
+        const int n = b.getNumSamples();
+
+        float peak = 0.0f;
+        for (int i = 0; i < n; ++i)
+            peak = juce::jmax (peak, std::abs (d[i]));
+        if (peak <= 0.0f)
+            return;
+
+        const float threshold = peak * 0.05f; // -26 dB of peak counts as "active"
+        double sumSq = 0.0;
+        int count = 0;
+        for (int i = 0; i < n; ++i)
+            if (std::abs (d[i]) > threshold) { sumSq += (double) d[i] * (double) d[i]; ++count; }
+
+        if (count == 0)
+            return;
+
+        const float rms = (float) std::sqrt (sumSq / (double) count);
+        if (rms <= 0.0f)
+            return;
+
+        float gain = targetRms / rms;
+        if (peak * gain > peakCeiling) // safety: never let a transient clip
+            gain = peakCeiling / peak;
+
+        b.applyGain (gain);
+    }
+}
+
 //==============================================================================
 WorldizerAudioProcessor::WorldizerAudioProcessor()
     : AudioProcessor (BusesProperties()
@@ -155,6 +196,10 @@ void WorldizerAudioProcessor::generateTestSignals (double sampleRate)
         const int fo = juce::jmax (1, (int) (0.001 * sr));
         for (int i = 0; i < fo && i < len; ++i) d[len - 1 - i] *= (float) i / (float) fo;
     }
+
+    // Match perceived loudness across all three (active-region RMS, peak-capped).
+    for (auto& b : testSignals)
+        normalizeActiveRms (b, 0.18f, 0.89f); // ~ -15 dBFS RMS, -1 dBFS peak ceiling
 }
 
 //==============================================================================
