@@ -52,18 +52,26 @@ This document tracks development slices for Worldizer. Each slice ends with a bu
 **What worked**
 - Geometry/timing is exact: direct and first-reflection arrival times match hand calculations to the sample. Decay times scale correctly with room size and absorption.
 - Determinism (seeded `juce::Random`) gives bit-identical WAVs for re-runs — useful for regression testing.
-- Performance is far inside budget: 20k rays trace in ~0.05s, 200k in ~0.5s (no BVH needed yet).
+- Performance is far inside budget: 20k-ray gym trace ~0.05s, 500k ~1.3s; IR build ~0.02–0.03s (no BVH needed yet).
 - The principled reflection normalization (`2/micRadius · √(E/numRays)`) puts reflections on the same physical scale as the `1/d` direct sound.
 
-**Harder / surprising**
-- `juce::Vector3D` lives in `juce_opengl`, which would drag the GUI stack into the headless tool. Used a small `Worldizer::Vec3` instead (matches the architecture's "pure C++ core" goal). All engine types unified under the `Worldizer` namespace.
-- **Specular early reflections over-spike.** With low-scattering surfaces (concrete/glass), many rays focus into one time bin, so the first floor bounce reads ~12 dB louder than the `1/path` law predicts — it even exceeds the direct in the small room. This is the known limitation of pure stochastic ray tracing for low-order specular reflections.
-- The 10 cm mic + 20k rays under-samples large/open scenes (gym ~37 hits, forest 0). Hit count scales linearly with rays (200k → gym 395, forest 27), so it's sampling density, not a bug. IRs are noticeably cleaner at 100k–200k rays.
+**IR reconstruction (FINAL — `IRBuilder`)**
+The pragmatic broadband-impulse-per-bin shortcut was tried first per the prompt, but it sounded like static/crackle, so it was **replaced with proper band-filtered modulated-noise synthesis** (standard auralization):
+- Per octave band (8 bands, 62.5–8000 Hz): air-weighted energy histogram → smoothed into a **time-growing-window** energy envelope (short early for reflection detail, long late so the sparse diffuse tail is continuous) → `sqrt` → amplitude-modulates **independent white noise** band-passed by **two cascaded RBJ biquads (24 dB/oct, Q≈0.9)**, normalised to unit RMS. The 8 bands sum incoherently (flat magnitude, no comb colouration) and decay independently (HF darkens before LF).
+- A clean broadband **direct impulse** (`1/distance`, air-weighted) is added on top; 20 ms end fade; whole IR peak-normalised to **−1 dBFS**.
+- **IR format for Slice 2:** mono `juce::AudioBuffer<float>`, 48 kHz, peak-normalised to −1 dBFS, length `min(maxLengthSamples=6·48000, numBins)`. The IR **contains the direct sound**, so a fully-wet convolution already includes direct + room. Tool writes 24-bit PCM mono WAV.
 
-**Deferred (to Slice 1.5 / 2 / later)**
-- `ImageSourceSolver` — handles orders 1–3 specular accurately and will fix the early-reflection over-spike (hybrid ISM + ray tracing per the architecture).
-- Per-band noise-filtered IR reconstruction (Slice 1 uses the pragmatic broadband-energy-per-bin shortcut, which is correct in energy but not spectrally detailed).
+**Harder / surprising**
+- `juce::Vector3D` lives in `juce_opengl`, which would drag the GUI stack into the headless tool. Used a small `Worldizer::Vec3` (`Source/Shared/Vec3.h`) instead. All engine types unified under the `Worldizer` namespace.
+- A sweep ends in HF, which (by design) decays fastest and is unmodelled above ~11 kHz — so sweep *endings* sound dry even though the room isn't. Judge tail length with a broadband transient / gated noise, not a sweep.
+- Brick-wall FFT band analysis grossly misreports low-band RT (sinc smearing); always measure octave decay with IIR octave filters.
+- The 10 cm mic under-samples large/open scenes (gym ~37 hits at 20k, ~1000 at 500k). Hit count scales linearly with rays; envelope smoothing + dense noise carrier hide it, but renders use 100k–500k rays.
+
+**Deferred / known limitations (Slice 1.5 / 2 / later)**
+- `ImageSourceSolver` — discrete, sharp early reflections (orders 1–3); will also fix the **specular early-reflection over-spike** (small-room floor bounce ~12 dB hot) and the current smearing of early reflections into the diffuse envelope.
+- Reconstruction tops out at the 8 kHz octave (~11 kHz); content above passes dry — optional 16 kHz band later.
 - Statistical late-tail synthesis; stereo / multi-mic IRs; JSON scene loading; larger default mic radius or adaptive ray counts for big/open scenes.
+- IR is peak-normalised (not absolute-calibrated) → Slice 2 owns wet/dry/mix gain.
 
 ---
 
