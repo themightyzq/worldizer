@@ -246,3 +246,30 @@ target_link_libraries(RenderTestScene
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags
 )
+
+# === Slice 4: verifies moving the mic produces a different IR ===
+juce_add_console_app(MicMoveTest PRODUCT_NAME "MicMoveTest")
+juce_generate_juce_header(MicMoveTest)
+target_sources(MicMoveTest
+    PRIVATE
+        Tests/mic_move_test.cpp
+        Source/Model/Material.cpp
+        Source/Model/Brush.cpp
+        Source/Model/SourceNode.cpp
+        Source/Model/MicNode.cpp
+        Source/Model/Scene.cpp
+        Source/Model/TestScenes.cpp
+        Source/DSP/RayTracer.cpp
+        Source/DSP/IRBuilder.cpp
+        Source/DSP/AirAbsorption.cpp
+)
+target_compile_definitions(MicMoveTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(MicMoveTest
+    PRIVATE
+        juce::juce_audio_formats
+        juce::juce_audio_basics
+        juce::juce_core
+        juce::juce_dsp
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
