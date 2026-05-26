@@ -268,6 +268,15 @@ transient clicks; the click is transient-limited and maxed to a peak ceiling).
 
 ---
 
+## Cross-cutting backlog (flagged during Slice 4 testing)
+
+These are real gaps confirmed by ear/testing, to be addressed in future slices — not bugs in the current scope:
+
+- **Distance isn't dramatic enough.** The convolver uses `Trim::yes` (strips the propagation delay) and `Normalise::yes` (flattens absolute level), so moving source/mic changes the dry/wet ratio + reflection pattern but NOT the arrival delay or "far = quieter" cue. Since "distance is the headline cue" (`CLAUDE.md`), revisit as a focused distance-model pass (tradeoff: no-trim adds variable latency + breaks dry/wet phase alignment; no-normalize swings levels).
+- **Tail has a hard limit, doesn't decay smoothly to silence.** The ray-traced echogram is finite (`maxBounces` / `maxTraceTime`); needs the **statistical late-tail synthesis** deferred from Slice 1 to continue the decay exponentially to true silence.
+- **No panning / stereo image.** The IR is mono, applied identically to L/R, so source/mic geometry produces no stereo. Needs a **stereo / multi-mic IR** (two capsules → inter-channel time/level differences). Currently a v1.0 theme; high-value, consider pulling forward (it also carries the distance/delay cues).
+- **Out-of-bounds source/mic is crude.** Drag is soft-clamped to ~1 m past the scene bounds; beyond a wall the direct just occludes. Want a more elegant solution: either disallow placing source/mic outside the main area entirely, or render the through-wall case accurately (transmission/occlusion).
+
 ## Post-MVP (v1.0 and beyond)
 
 **v1.0 themes:**
