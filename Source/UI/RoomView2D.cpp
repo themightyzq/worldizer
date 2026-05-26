@@ -126,16 +126,9 @@ namespace
 
         if (drawIcons)
         {
-            // Source: amber, small arrow toward the mic (the listening axis).
-            const auto dir = (micP - srcP);
-            const float len = dir.getDistanceFromOrigin();
-            if (len > 1.0f)
-            {
-                const auto u = dir / len;
-                const auto tip = srcP + u * 16.0f;
-                g.setColour (Colors::sourceIcon.withAlpha (0.7f));
-                g.drawLine ({ srcP, tip }, 2.0f);
-            }
+            // Source: amber filled circle. No facing arrow — the source is
+            // omnidirectional for now; directivity (and a real orientation
+            // indicator) arrives with v1.0.
             drawIcon (g, srcP, 8.0f, Colors::sourceIcon, juce::Colours::transparentBlack,
                       hovered == RoomView2D::Target::Source || active == RoomView2D::Target::Source);
             // Mic: cyan with amber ring.
