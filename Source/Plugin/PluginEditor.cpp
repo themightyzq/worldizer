@@ -1,38 +1,160 @@
 #include "PluginEditor.h"
 #include "../Shared/Constants.h"
 
+using LnF = WorldizerLookAndFeel;
+
+//==============================================================================
+juce::String WorldizerAudioProcessorEditor::displayName (const juce::String& s)
+{
+    if (s == "smallConcreteRoom") return "Small Concrete Room";
+    if (s == "hallway")           return "Hallway";
+    if (s == "forestClearing")    return "Forest Clearing";
+    if (s == "gymnasium")         return "Gymnasium";
+    if (s == "anechoic")          return "Anechoic";
+    return s;
+}
+
 //==============================================================================
 WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProcessor& p)
     : AudioProcessorEditor (&p), processorRef (p)
 {
-    setSize (Worldizer::kDefaultWindowWidth, Worldizer::kDefaultWindowHeight);
-    setResizable (true, true);
-    setResizeLimits (Worldizer::kMinWindowWidth, Worldizer::kMinWindowHeight,
-                     Worldizer::kMaxWindowWidth, Worldizer::kMaxWindowHeight);
+    setLookAndFeel (&lookAndFeel);
 
-    // processorRef is held for Slice 4 (parameter attachments, scene access).
-    // Intentionally unused in the scaffold.
-    juce::ignoreUnused (processorRef);
+    // --- Scene selector ---
+    sceneNames = WorldizerAudioProcessor::getAvailableSceneNames();
+    for (int i = 0; i < sceneNames.size(); ++i)
+        sceneSelector.addItem (displayName (sceneNames[i]), i + 1);
+
+    const int currentIdx = sceneNames.indexOf (processorRef.getCurrentSceneName());
+    sceneSelector.setSelectedId (juce::jmax (0, currentIdx) + 1, juce::dontSendNotification);
+    sceneSelector.setTooltip ("Choose the acoustic space to convolve through.");
+    sceneSelector.onChange = [this]
+    {
+        const int id = sceneSelector.getSelectedId();
+        if (id >= 1 && id <= sceneNames.size())
+            processorRef.setCurrentSceneName (sceneNames[id - 1]);
+    };
+    addAndMakeVisible (sceneSelector);
+
+    sceneLabel.setText ("Scene", juce::dontSendNotification);
+    sceneLabel.setJustificationType (juce::Justification::centredLeft);
+    addAndMakeVisible (sceneLabel);
+
+    renderingIndicator.setText ("rendering...", juce::dontSendNotification);
+    renderingIndicator.setJustificationType (juce::Justification::centredLeft);
+    renderingIndicator.setColour (juce::Label::textColourId, LnF::Colors::accent);
+    renderingIndicator.setVisible (false);
+    addAndMakeVisible (renderingIndicator);
+
+    // --- Rotary controls ---
+    auto setupKnob = [this] (juce::Slider& s, juce::Label& l, const juce::String& name, const juce::String& tip)
+    {
+        s.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+        s.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 72, 18);
+        s.setTooltip (tip);
+        addAndMakeVisible (s);
+
+        l.setText (name, juce::dontSendNotification);
+        l.setJustificationType (juce::Justification::centred);
+        addAndMakeVisible (l);
+    };
+
+    setupKnob (inputGainSlider,  inputGainLabel,  "Input Gain",  "Gain applied before the worldizing chain.");
+    setupKnob (mixSlider,        mixLabel,        "Mix",         "Blend between dry input (0%) and worldized output (100%).");
+    setupKnob (outputGainSlider, outputGainLabel, "Output Gain", "Gain applied after the worldizing chain.");
+
+    // --- Bypass ---
+    bypassButton.setClickingTogglesState (true);
+    bypassButton.setTooltip ("Pass audio through unchanged.");
+    addAndMakeVisible (bypassButton);
+
+    // --- Parameter attachments ---
+    inputGainAttach  = std::make_unique<juce::SliderParameterAttachment> (*processorRef.apvts.getParameter ("inputGain"),  inputGainSlider);
+    mixAttach        = std::make_unique<juce::SliderParameterAttachment> (*processorRef.apvts.getParameter ("mix"),        mixSlider);
+    outputGainAttach = std::make_unique<juce::SliderParameterAttachment> (*processorRef.apvts.getParameter ("outputGain"), outputGainSlider);
+    bypassAttach     = std::make_unique<juce::ButtonParameterAttachment> (*processorRef.apvts.getParameter ("bypass"),     bypassButton);
+
+    setSize (600, 280);
+    setResizable (false, false);
+
+    startTimerHz (10);
 }
 
-WorldizerAudioProcessorEditor::~WorldizerAudioProcessorEditor() = default;
+WorldizerAudioProcessorEditor::~WorldizerAudioProcessorEditor()
+{
+    stopTimer();
+    setLookAndFeel (nullptr);
+}
+
+//==============================================================================
+void WorldizerAudioProcessorEditor::timerCallback()
+{
+    const bool r = processorRef.isRendering();
+    if (renderingIndicator.isVisible() != r)
+        renderingIndicator.setVisible (r);
+
+    // Keep the combo in sync if the scene changed outside the UI (e.g. state restore).
+    const int idx = sceneNames.indexOf (processorRef.getCurrentSceneName());
+    if (idx >= 0 && sceneSelector.getSelectedId() != idx + 1)
+        sceneSelector.setSelectedId (idx + 1, juce::dontSendNotification);
+}
 
 //==============================================================================
 void WorldizerAudioProcessorEditor::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colour (0xff1a1a1d));
+    g.fillAll (LnF::Colors::background);
 
-    g.setColour (juce::Colour (0xffe0c068)); // placeholder warm-amber accent (final palette TBD)
-    g.setFont (juce::Font (juce::FontOptions (22.0f).withStyle ("Bold")));
+    // Header accent line
+    g.setColour (LnF::Colors::accent.withAlpha (0.5f));
+    g.fillRect (12, 6, getWidth() - 24, 2);
 
-    const auto text = juce::String (Worldizer::kProductName)
-                        + " v" + Worldizer::kVersionString
-                        + juce::String::fromUTF8 (" \xe2\x80\x94 scaffold");
+    // Title + version
+    g.setColour (LnF::Colors::onSurface);
+    g.setFont (juce::Font (juce::FontOptions (20.0f).withStyle ("Bold")));
+    g.drawText ("WORLDIZER", 12, 16, 320, 24, juce::Justification::centredLeft, false);
 
-    g.drawText (text, getLocalBounds(), juce::Justification::centred, false);
+    g.setColour (LnF::Colors::outline);
+    g.setFont (juce::Font (juce::FontOptions (11.0f)));
+    g.drawText ("v" + juce::String (Worldizer::kVersionString), 12, 40, 120, 14, juce::Justification::centredLeft, false);
+
+    // Section dividers
+    g.setColour (LnF::Colors::outline.withAlpha (0.3f));
+    g.drawHorizontalLine (60,  12.0f, (float) getWidth() - 12.0f);
+    g.drawHorizontalLine (110, 12.0f, (float) getWidth() - 12.0f);
+
+    // Footer
+    g.setColour (LnF::Colors::outline);
+    g.setFont (juce::Font (juce::FontOptions (10.0f)));
+    g.drawText ("ZQSFX  |  github.com/zqsfx/worldizer",
+                getLocalBounds().removeFromBottom (28).reduced (12, 6),
+                juce::Justification::centredRight, false);
 }
 
 void WorldizerAudioProcessorEditor::resized()
 {
-    // Slice 0: no child components to lay out yet.
+    auto area = getLocalBounds();
+
+    auto header = area.removeFromTop (60);
+    bypassButton.setBounds (header.getRight() - 90, 17, 78, 26);
+
+    auto sceneRow = area.removeFromTop (50).reduced (12, 10);
+    sceneLabel.setBounds (sceneRow.removeFromLeft (50));
+    sceneSelector.setBounds (sceneRow.removeFromLeft (240));
+    sceneRow.removeFromLeft (12);
+    renderingIndicator.setBounds (sceneRow);
+
+    area.removeFromBottom (30); // footer
+
+    auto controls = area.reduced (12, 8);
+    const int colW = controls.getWidth() / 3;
+
+    auto place = [] (juce::Slider& s, juce::Label& l, juce::Rectangle<int> c)
+    {
+        s.setBounds (c.removeFromTop (96));
+        l.setBounds (c.removeFromTop (18));
+    };
+
+    place (inputGainSlider,  inputGainLabel,  controls.removeFromLeft (colW));
+    place (mixSlider,        mixLabel,        controls.removeFromLeft (colW));
+    place (outputGainSlider, outputGainLabel, controls);
 }

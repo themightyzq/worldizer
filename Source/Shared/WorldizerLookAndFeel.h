@@ -3,29 +3,28 @@
 #include <JuceHeader.h>
 
 /**
-    Worldizer's visual style. Analogous to HyperPrismLookAndFeel in ZQ's other
-    projects (see JUCE_VST3_UI_UX_BEST_PRACTICES.md). This is a stub for Slice 0;
-    Slice 4 fills in the full color system, knob drawing, and control styling.
-
-    The semantic color categories (Dynamics / Timing / Modulation / Frequency /
-    Output) carry over from the best-practices guide. Worldizer's primary accent
-    is TBD — likely a warm amber / muted gold to distinguish it from the
-    HyperPrism cyan palette. The placeholder below is not final.
+    Worldizer's visual style. Minimal for Slice 2 — dark background, light text,
+    amber accent knobs. The full color system and layout per
+    JUCE_VST3_UI_UX_BEST_PRACTICES.md land with RoomView2D in Slice 4.
 */
 class WorldizerLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
-    WorldizerLookAndFeel() = default;
+    WorldizerLookAndFeel();
 
-    /** Semantic color system. Values are placeholders pending the Slice 4 palette. */
+    /** Semantic color palette (Slice 2 minimal subset). */
     struct Colors
     {
         static const juce::Colour background;   // window background
-        static const juce::Colour surface;      // panels
+        static const juce::Colour surface;      // panels / track
         static const juce::Colour onSurface;    // primary text
         static const juce::Colour outline;      // dividers, muted text
-        static const juce::Colour accent;       // primary accent (warm amber, TBD)
+        static const juce::Colour accent;       // primary accent (warm amber)
     };
+
+    void drawRotarySlider (juce::Graphics&, int x, int y, int width, int height,
+                           float sliderPosProportional, float rotaryStartAngle,
+                           float rotaryEndAngle, juce::Slider&) override;
 
 private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WorldizerLookAndFeel)

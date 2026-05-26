@@ -1,36 +1,69 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <atomic>
+#include <memory>
 
 namespace Worldizer
 {
 /**
-    Wraps juce::dsp::Convolution for the audio thread. Supports loading a new IR
-    from the background thread with a smooth crossfade in processBlock — the
-    audio thread never blocks; new IRs arrive via a lock-free hand-off.
+    Real-time convolution runtime with click-free IR hot-swap.
 
-    Real-time rules: no allocations, no locks, no file I/O in process().
+    Owns two juce::dsp::Convolution instances. New IRs are loaded into the idle
+    convolver from a background thread (juce's loadImpulseResponse is wait-free and
+    prepares the IR on its own loader thread). On the next process() call the audio
+    thread runs both convolvers in parallel and crossfades old -> new over a linear
+    ramp, then swaps roles. The audio thread never allocates, locks, or does I/O.
 
-    Slice 2 implements the convolver, the lock-free IR hand-off, and crossfade.
+    The mono IR is applied to every channel independently (pseudo-stereo); true
+    stereo IRs are a later concern.
 */
 class ConvolutionEngine
 {
 public:
-    ConvolutionEngine() = default;
+    ConvolutionEngine();
+    ~ConvolutionEngine();
 
-    /** Allocate processing buffers. Called from prepareToPlay (not real-time). */
-    void prepare (const juce::dsp::ProcessSpec& spec);
-
-    /** Release resources. */
+    // === Lifecycle (message thread) ===
+    void prepare (double sampleRate, int maximumBlockSize, int numChannels);
     void reset();
 
-    /** Queue a new IR for crossfade. Safe to call from the background thread. */
-    void loadIR (juce::AudioBuffer<float>&& ir, double irSampleRate);
+    // === IR loading (background / message thread; never the audio thread) ===
+    /** Loads a new IR and triggers a crossfade on subsequent process() calls.
+        The buffer is copied, so the caller may release it after this returns. */
+    void loadIR (const juce::AudioBuffer<float>& ir, double irSampleRate, float crossfadeMs = 80.0f);
 
-    /** Process a block in place. Real-time safe. */
-    void process (juce::AudioBuffer<float>& buffer);
+    /** True if a swap is queued or a crossfade is in progress. Callers loading a
+        new IR should wait until this is false so they don't clobber the idle
+        convolver mid-crossfade. */
+    bool isIRPending() const noexcept;
+
+    // === Real-time processing (audio thread only) ===
+    void process (juce::dsp::AudioBlock<float> block);
+
+    // === Latency (message thread) ===
+    int getLatencySamples() const noexcept;
 
 private:
+    std::unique_ptr<juce::dsp::Convolution> convolverA; // current
+    std::unique_ptr<juce::dsp::Convolution> convolverB; // incoming during crossfade
+
+    juce::AudioBuffer<float> scratchA, scratchB;
+
+    std::atomic<bool> swapRequested      { false };
+    std::atomic<int>  crossfadeSamples   { 0 };
+    std::atomic<bool> crossfadeInProgress { false };
+
+    // Audio-thread-only crossfade state.
+    int  crossfadeTotal = 0;
+    int  crossfadeRemaining = 0;
+    bool crossfadeActive = false;
+
+    double sampleRate   = 48000.0;
+    int    maxBlockSize = 512;
+    int    numChannels  = 2;
+    bool   prepared     = false;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ConvolutionEngine)
 };
 } // namespace Worldizer

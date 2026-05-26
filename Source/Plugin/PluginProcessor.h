@@ -1,14 +1,18 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "../DSP/ConvolutionEngine.h"
+#include "RenderThread.h"
+#include "../Shared/Constants.h"
 
 /**
     Worldizer — main audio processor.
 
-    Slice 0 (scaffold): this is a stereo pass-through with a single `bypass`
-    parameter and complete APVTS state save/restore. No DSP is performed yet.
-    The convolution engine, character chains, ambient bed, and the background
-    ray-tracing thread are introduced in later slices (see TODO.md).
+    Slice 2: a real-time convolution reverb. The input is convolved with the IR of
+    the selected test scene (rendered on a background thread by the ray tracer and
+    crossfaded in by the ConvolutionEngine), then blended with a latency-matched dry
+    path and trimmed by input/output gain. A pre-baked default IR is embedded so the
+    first audio is available immediately on cold start.
 */
 class WorldizerAudioProcessor : public juce::AudioProcessor
 {
@@ -31,7 +35,7 @@ public:
     bool acceptsMidi() const override                      { return false; }
     bool producesMidi() const override                     { return false; }
     bool isMidiEffect() const override                     { return false; }
-    double getTailLengthSeconds() const override           { return 0.0; }
+    double getTailLengthSeconds() const override           { return (double) Worldizer::kMaxIRLengthSeconds; }
 
     //==============================================================================
     int getNumPrograms() override                          { return 1; }
@@ -44,17 +48,47 @@ public:
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
 
-    //==============================================================================
-    // Exposes the bypass parameter to the host so native bypass works correctly.
     juce::AudioProcessorParameter* getBypassParameter() const override { return bypassParam; }
 
-    // Public so the editor (and future components) can attach to parameters.
+    //==============================================================================
+    // === Scene selection ===
+    juce::String getCurrentSceneName() const;
+    void setCurrentSceneName (const juce::String& sceneName);
+    static juce::StringArray getAvailableSceneNames();
+    bool isRendering() const noexcept;
+
     juce::AudioProcessorValueTreeState apvts;
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
+    void requestSceneRender (const juce::String& sceneName, float crossfadeMs);
+    void loadEmbeddedDefaultIR();
+    void updateDryDelayToMatchConvolutionLatency();
 
+    static constexpr const char* kDefaultScene = "smallConcreteRoom";
+
+    Worldizer::ConvolutionEngine convolution;
+    std::unique_ptr<Worldizer::RenderThread> renderThread;
+
+    juce::dsp::Gain<float> inputGain, outputGain;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> mixSmoothed;
+
+    std::atomic<float>* bypassValue     = nullptr;
+    std::atomic<float>* inputGainValue  = nullptr;
+    std::atomic<float>* outputGainValue = nullptr;
+    std::atomic<float>* mixValue        = nullptr;
     juce::AudioParameterBool* bypassParam = nullptr;
+
+    juce::CriticalSection sceneNameLock;
+    juce::String currentSceneName { kDefaultScene };
+
+    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> dryDelay { 8192 };
+    int currentDryDelaySamples = 0;
+
+    juce::AudioBuffer<float> dryScratch;
+    std::vector<float>       mixRamp;
+
+    std::atomic<bool> prepared { false };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WorldizerAudioProcessor)
 };

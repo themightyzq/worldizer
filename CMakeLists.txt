@@ -60,11 +60,14 @@ target_sources(Worldizer
         Source/Plugin/PluginEditor.cpp
         Source/Plugin/PluginProcessor.h
         Source/Plugin/PluginEditor.h
+        Source/Plugin/RenderThread.h
+        Source/Plugin/RenderThread.cpp
 
         # --- Shared ---
         Source/Shared/Constants.h
         Source/Shared/Vec3.h
         Source/Shared/WorldizerLookAndFeel.h
+        Source/Shared/WorldizerLookAndFeel.cpp
 
         # --- Model ---
         Source/Model/Brush.h
@@ -85,6 +88,7 @@ target_sources(Worldizer
         Source/DSP/AirAbsorption.cpp
         Source/DSP/AmbientBed.h
         Source/DSP/ConvolutionEngine.h
+        Source/DSP/ConvolutionEngine.cpp
         Source/DSP/ImageSourceSolver.h
         Source/DSP/IRBuilder.h
         Source/DSP/IRBuilder.cpp
@@ -123,8 +127,16 @@ if(APPLE)
     )
 endif()
 
+# Embedded default IR (small concrete room) for instant audio on cold start.
+juce_add_binary_data(WorldizerBinaryData
+    HEADER_NAME "WorldizerBinaryData.h"
+    NAMESPACE   "WorldizerBinaryData"
+    SOURCES
+        Resources/Presets/default_ir.wav)
+
 target_link_libraries(Worldizer
     PRIVATE
+        WorldizerBinaryData
         juce::juce_audio_utils
         juce::juce_dsp
         juce::juce_opengl
