@@ -149,14 +149,28 @@ transient clicks; the click is transient-limited and maxed to a peak ceiling).
 
 **Goal:** First real UI. Preset browser + draggable source/mic on top-down geometry view.
 
-- [ ] `WorldizerLookAndFeel` with full color system
-- [ ] `RoomView2D` component — paints brushes as outlines, source/mic as icons, supports drag
-- [ ] `PresetBrowser` component — categorized list, click-to-load
-- [ ] Standard controls panel: Distance, Source character (placeholder dropdown), Mic character (placeholder dropdown), Ambient bed level, Mix, Output gain
-- [ ] Source/mic drag in the top-down view triggers low-quality preview ray trace, IR crossfades
-- [ ] Drag release triggers full-quality ray trace, IR crossfades again
+- [x] `WorldizerLookAndFeel` with the committed color system (dark neutral + amber) and amber knob/button/scrollbar/texteditor drawing
+- [x] `RoomView2D` — top-down geometry outlines + grid + scale bar, source (amber) / mic (cyan) icons, drag in the horizontal plane, `renderToImage` / `renderSceneThumbnail`
+- [x] `PresetBrowser` — collapsible sidebar, search filter, scrollable list with thumbnails, Save-As placeholder, 1 Hz user-folder polling
+- [x] Control row: Input Gain / Mix / Output Gain knobs + Click/Sweep/Noise audition + rendering indicator (the character/ambient controls are Slices 5–6, not this slice)
+- [x] Source/mic drag → preview render (5k rays, 30 ms crossfade); release → full render (50k, 100 ms) via `RenderThread::Job` Scene-snapshot + Quality
+- [x] Real geometry thumbnails baked into presets (BakePresets uses `renderSceneThumbnail`)
+- [x] State save/restore includes source/mic positions + sidebar collapse (skips re-render when positions == defaults); 900×650 resizable window
+- [x] pluginval --strictness-level 10 passes; Universal Binary
 
-**Acceptance:** Plugin loads with a preset; user can drag source and mic in the room view and hear the worldizing morph in real time. Switching between 3 test presets works.
+**Acceptance:** Plugin loads with a preset; user drags source/mic and hears the worldizing morph live; switching presets works. **Verified:** clean build, real thumbnails, pluginval strictness 10, UB, and a screenshot confirming the full UI renders as a coherent product (`Docs/images/screenshot.png`). **Needs user/DAW:** drag responsiveness by ear, user-folder polling round-trip, Soundminer fit.
+
+### Slice 4 retrospective
+
+**Visual language:** committed in `Worldizer::Colors` (dark neutral `#1a1a1a`/`#242424` + amber `#ffab00`; mic is the lone cyan accent). `WorldizerLookAndFeel` draws amber rotary arcs with an indicator pip, outline/filled buttons, and a thin scrollbar. The product reads coherently (see screenshot).
+
+**RoomView2D:** a static `drawScene()` helper computes an auto-fit scene→view transform (10% padding, +Y up) and is shared by the live component and `renderSceneThumbnail()`, so thumbnails are pixel-identical to the live view. Drag projects the mouse back to scene XY (Z fixed), soft-clamps to bounds, and fires `onPositionsChanged` (preview) / `onPositionsFinalized` (full).
+
+**Live drag rendering:** `RenderThread::Job` now carries a `Scene` snapshot + `Quality` (Preview 5k/12 vs Full 50k/32) instead of a scene name; the one-deep replacement queue collapses rapid drag updates to the latest. Drag edits are ephemeral (not written to the preset on disk); the header subtitle shows `*` when modified.
+
+**Deviations:** (1) UI/processor position APIs use `Worldizer::Vec3` (not `juce::Vector3D`, consistent with the engine). (2) `RoomView2D::hitTest` renamed `pickTarget` (avoids hiding `Component::hitTest`). (3) sidebar-collapse state stored on the processor (atomic) so it persists even when the editor is closed. (4) `BakePresets` renders real 128×128 thumbnails (links `RoomView2D.cpp`). (5) `WorldizerLookAndFeel` exposes a global `using` alias for the global-namespace editor. Version → 0.0.3.
+
+**To revisit:** the browser populates once + polls the user folder at 1 Hz (no live shipped-list changes). No user zoom/pan in the room view. Source "facing" arrow points at the mic (omni source has no real orientation yet). Edit button is a disabled placeholder (Slice 7).
 
 ---
 

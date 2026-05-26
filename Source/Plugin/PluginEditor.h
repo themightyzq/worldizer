@@ -3,11 +3,13 @@
 #include <JuceHeader.h>
 #include "PluginProcessor.h"
 #include "../Shared/WorldizerLookAndFeel.h"
+#include "../UI/RoomView2D.h"
+#include "../UI/PresetBrowser.h"
 
 /**
-    Worldizer — minimal Slice 2 editor: scene selector, input/mix/output controls,
-    bypass, and a "rendering..." indicator. Fixed size; the full layout (RoomView2D
-    etc.) arrives in Slice 4.
+    Worldizer — Slice 4 editor. Top-down RoomView2D centrepiece, collapsible preset
+    browser sidebar, polished control row, header, and footer. 900x650 default,
+    resizable 700x550..1400x1000.
 */
 class WorldizerAudioProcessorEditor : public juce::AudioProcessorEditor,
                                       private juce::Timer
@@ -21,23 +23,32 @@ public:
 
 private:
     void timerCallback() override;
-    void populatePresetCombo();
+    void onPresetSelected (const juce::String& presetId);
+    void updateSubtitle();
 
     WorldizerAudioProcessor& processorRef;
     WorldizerLookAndFeel lookAndFeel;
 
-    juce::StringArray presetIds;   // combo index (0-based) -> preset id
-
-    juce::ComboBox  presetSelector;
-    juce::Label     presetLabel, renderingIndicator;
-
-    juce::Slider    inputGainSlider, mixSlider, outputGainSlider;
-    juce::Label     inputGainLabel, mixLabel, outputGainLabel;
-
+    // Header
+    juce::TextButton editButton { "Edit" };
     juce::TextButton bypassButton { "Bypass" };
+    juce::String subtitleText;
 
-    juce::Label auditionLabel;
-    std::array<juce::TextButton, 3> testButtons;
+    // Sidebar + main view
+    Worldizer::PresetBrowser presetBrowser;
+    Worldizer::RoomView2D    roomView;
+
+    // Control row
+    juce::Slider inputGainSlider, mixSlider, outputGainSlider;
+    juce::Label  inputGainLabel, mixLabel, outputGainLabel;
+    juce::TextButton clickButton { "Click" }, sweepButton { "Sweep" }, noiseButton { "Noise" };
+    juce::Label  renderingIndicator;
+
+    // Footer
+    juce::HyperlinkButton githubLink;
+
+    juce::Rectangle<int> controlRowBounds;
+    bool positionsModified = false;
 
     std::unique_ptr<juce::SliderParameterAttachment> inputGainAttach, mixAttach, outputGainAttach;
     std::unique_ptr<juce::ButtonParameterAttachment> bypassAttach;

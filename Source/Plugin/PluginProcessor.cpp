@@ -102,14 +102,6 @@ juce::String WorldizerAudioProcessor::sceneNameToPresetId (const juce::String& s
     return s; // assume it is already a preset id
 }
 
-juce::String WorldizerAudioProcessor::presetIdToSceneName (const juce::String& p)
-{
-    if (p == "small_concrete_room") return "smallConcreteRoom";
-    if (p == "forest_clearing")     return "forestClearing";
-    if (p == "hallway" || p == "gymnasium" || p == "anechoic") return p;
-    return {};
-}
-
 juce::String WorldizerAudioProcessor::getCurrentPresetId() const
 {
     const juce::ScopedLock sl (presetLock);
@@ -162,12 +154,9 @@ void WorldizerAudioProcessor::setCurrentPresetId (const juce::String& presetId)
     }
     else
     {
-        // Recovery path: no baked IR — render from geometry. The only time the
-        // render thread runs in normal Slice 3 use.
+        // Recovery path: no baked IR — render from the loaded geometry.
         juce::Logger::writeToLog ("Preset " + presetId + " has no rendered.wav; rendering from geometry");
-        const auto sceneName = presetIdToSceneName (presetId);
-        if (sceneName.isNotEmpty())
-            requestSceneRender (sceneName, 80.0f);
+        renderCurrentScene (true, 80.0f);
     }
 }
 
@@ -180,18 +169,34 @@ bool WorldizerAudioProcessor::isRendering() const noexcept
 juce::String WorldizerAudioProcessor::getCurrentSceneName() const { return getCurrentPresetId(); }
 void WorldizerAudioProcessor::setCurrentSceneName (const juce::String& sceneName) { setCurrentPresetId (sceneNameToPresetId (sceneName)); }
 
-void WorldizerAudioProcessor::requestSceneRender (const juce::String& sceneName, float crossfadeMs)
+void WorldizerAudioProcessor::renderCurrentScene (bool fullQuality, float crossfadeMs)
 {
     if (renderThread == nullptr)
         return;
 
     RenderThread::Job job;
-    job.sceneName   = sceneName;
-    job.numRays     = 50000;
-    job.maxBounces  = 32;
-    job.randomSeed  = 12345;
+    {
+        const juce::ScopedLock sl (presetLock);
+        if (! currentPresetMetadata.has_value())
+            return;
+        job.scene = currentPresetMetadata->scene;
+    }
+    job.quality     = fullQuality ? RenderThread::Job::Quality::Full : RenderThread::Job::Quality::Preview;
     job.crossfadeMs = crossfadeMs;
     renderThread->requestRender (job);
+}
+
+void WorldizerAudioProcessor::setSourceAndMicPositions (Worldizer::Vec3 sourcePos,
+                                                        Worldizer::Vec3 micPos, bool fullQuality)
+{
+    {
+        const juce::ScopedLock sl (presetLock);
+        if (! currentPresetMetadata.has_value())
+            return;
+        currentPresetMetadata->scene.getSource().setPosition (sourcePos);
+        currentPresetMetadata->scene.getMic().setPosition (micPos);
+    }
+    renderCurrentScene (fullQuality, fullQuality ? 100.0f : 30.0f);
 }
 
 //==============================================================================
@@ -460,7 +465,16 @@ void WorldizerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
     {
         const juce::ScopedLock sl (presetLock);
         state.setProperty ("currentPreset", currentPresetId, nullptr);
+        if (currentPresetMetadata.has_value())
+        {
+            const auto s = currentPresetMetadata->scene.getSource().getPosition();
+            const auto m = currentPresetMetadata->scene.getMic().getPosition();
+            state.setProperty ("sourceX", s.x, nullptr); state.setProperty ("sourceY", s.y, nullptr); state.setProperty ("sourceZ", s.z, nullptr);
+            state.setProperty ("micX",    m.x, nullptr); state.setProperty ("micY",    m.y, nullptr); state.setProperty ("micZ",    m.z, nullptr);
+        }
     }
+    state.setProperty ("sidebarCollapsed", sidebarCollapsed.load(), nullptr);
+
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -474,6 +488,9 @@ void WorldizerAudioProcessor::setStateInformation (const void* data, int sizeInB
         {
             apvts.replaceState (state);
 
+            if (state.hasProperty ("sidebarCollapsed"))
+                sidebarCollapsed.store ((bool) state["sidebarCollapsed"]);
+
             juce::String presetId;
             if (state.hasProperty ("currentPreset"))
                 presetId = state["currentPreset"].toString();
@@ -481,7 +498,32 @@ void WorldizerAudioProcessor::setStateInformation (const void* data, int sizeInB
                 presetId = sceneNameToPresetId (state["currentScene"].toString());
 
             if (presetId.isNotEmpty())
-                setCurrentPresetId (presetId);
+            {
+                setCurrentPresetId (presetId);  // loads the baked IR at default positions
+
+                // Restored source/mic positions: only re-render if they differ from
+                // the preset defaults (otherwise the baked IR is correct — stay instant).
+                if (state.hasProperty ("sourceX"))
+                {
+                    const Worldizer::Vec3 src ((float) state["sourceX"], (float) state["sourceY"], (float) state["sourceZ"]);
+                    const Worldizer::Vec3 mic ((float) state["micX"],    (float) state["micY"],    (float) state["micZ"]);
+
+                    bool differs = true;
+                    {
+                        const juce::ScopedLock sl (presetLock);
+                        if (currentPresetMetadata.has_value())
+                        {
+                            const auto ds = currentPresetMetadata->scene.getSource().getPosition();
+                            const auto dm = currentPresetMetadata->scene.getMic().getPosition();
+                            auto close = [] (Worldizer::Vec3 a, Worldizer::Vec3 b)
+                            { return (a - b).length() < 1.0e-3f; };
+                            differs = ! (close (ds, src) && close (dm, mic));
+                        }
+                    }
+                    if (differs)
+                        setSourceAndMicPositions (src, mic, true);
+                }
+            }
         }
     }
 }

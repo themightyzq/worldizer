@@ -59,8 +59,19 @@ public:
     void         setCurrentPresetId (const juce::String& presetId);
     juce::StringArray getAvailablePresetIds() const;
     juce::Array<Worldizer::WzPresetIO::Loaded> getAvailablePresetMetadata() const;
+    Worldizer::PresetManager& getPresetManager() noexcept { return *presetManager; }
     std::optional<Worldizer::WzPresetIO::Loaded> getCurrentPresetMetadata() const;
     bool isRendering() const noexcept;
+
+    // === Live source/mic drag (Slice 4) ===
+    /** Updates the current scene's source/mic positions and re-renders the IR
+        (preview quality during drag, full on release). Ephemeral — not written
+        back to the preset on disk. */
+    void setSourceAndMicPositions (Worldizer::Vec3 sourcePos, Worldizer::Vec3 micPos, bool fullQuality);
+
+    // === Sidebar UI state (persisted in plugin state) ===
+    bool getSidebarCollapsed() const noexcept { return sidebarCollapsed.load(); }
+    void setSidebarCollapsed (bool shouldBeCollapsed) { sidebarCollapsed.store (shouldBeCollapsed); }
 
     // === Deprecated Slice 2 scene API (mapped onto presets for compatibility) ===
     [[deprecated ("Use getCurrentPresetId")]] juce::String getCurrentSceneName() const;
@@ -77,11 +88,10 @@ public:
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
-    void requestSceneRender (const juce::String& sceneName, float crossfadeMs);
+    void renderCurrentScene (bool fullQuality, float crossfadeMs);
     void loadEmbeddedDefaultIR();
     void updateDryDelayToMatchConvolutionLatency();
     static juce::String sceneNameToPresetId (const juce::String& sceneName);
-    static juce::String presetIdToSceneName (const juce::String& presetId);
 
     static constexpr const char* kDefaultPreset = "small_concrete_room";
 
@@ -101,6 +111,7 @@ private:
     mutable juce::CriticalSection presetLock;
     juce::String currentPresetId { kDefaultPreset };
     std::optional<Worldizer::WzPresetIO::Loaded> currentPresetMetadata;
+    std::atomic<bool> sidebarCollapsed { false };
 
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> dryDelay { 8192 };
     int currentDryDelaySamples = 0;

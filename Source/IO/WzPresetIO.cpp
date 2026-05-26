@@ -287,6 +287,19 @@ std::optional<WzPresetIO::Loaded> WzPresetIO::readMetadataOnly (const juce::File
     if (out.name.isEmpty())
         out.name = out.presetId;
 
+    // Also load the small bits the browser needs (geometry + thumbnail), but NOT
+    // the large rendered.wav — that loads on demand via readBundle().
+    const auto geoFile = bundleDir.getChildFile ("geometry.json");
+    if (geoFile.existsAsFile())
+    {
+        juce::String gErr;
+        out.scene = sceneFromJson (juce::JSON::parse (geoFile.loadFileAsString()), gErr);
+    }
+
+    const auto thumbFile = bundleDir.getChildFile ("thumbnail.png");
+    if (thumbFile.existsAsFile())
+        out.thumbnail = juce::ImageFileFormat::loadFrom (thumbFile);
+
     errorOut.clear();
     return out;
 }

@@ -14,6 +14,7 @@
 #include "../../Source/DSP/RayTracer.h"
 #include "../../Source/DSP/IRBuilder.h"
 #include "../../Source/IO/WzPresetIO.h"
+#include "../../Source/UI/RoomView2D.h"
 
 using namespace Worldizer;
 
@@ -91,6 +92,7 @@ int main (int argc, char** argv)
         meta.renderSampleRate = 48000;
         meta.renderSeed       = seed;
         meta.renderedAt = juce::Time::getCurrentTime().toISO8601 (true);
+        meta.thumbnail  = renderSceneThumbnail (scene, 128, 128); // real top-down geometry render
 
         const auto bundleDir = outputDir.getChildFile (juce::String (info.id) + ".wzpreset");
         juce::String err;

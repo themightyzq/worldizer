@@ -19,6 +19,12 @@ Worldizer is built for two complementary ways of working:
 
 Both modes share one engine: a ray tracer + image-source solver that bakes an impulse response from your scene, a curated library of recorded speakers, microphones, and room tones, and a lightweight 2D top-down editor.
 
+## Screenshot
+
+![Worldizer browse mode](Docs/images/screenshot.png)
+
+*Browse mode: the preset sidebar (with geometry thumbnails), the top-down room view with draggable source (amber) and mic (cyan), and the controls. Drag the source or mic to re-render the space live.*
+
 ## Status
 
 > **Pre-alpha — under active development. Not yet ready for production use.**

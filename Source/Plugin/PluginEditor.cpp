@@ -1,98 +1,102 @@
 #include "PluginEditor.h"
 #include "../Shared/Constants.h"
 
-using LnF = WorldizerLookAndFeel;
-
-//==============================================================================
-void WorldizerAudioProcessorEditor::populatePresetCombo()
-{
-    presetSelector.clear (juce::dontSendNotification);
-    presetIds.clear();
-
-    const auto all = processorRef.getAvailablePresetMetadata();
-    for (int i = 0; i < all.size(); ++i)
-    {
-        presetSelector.addItem (all.getReference (i).name, i + 1);
-        presetIds.add (all.getReference (i).presetId);
-    }
-
-    const int cur = presetIds.indexOf (processorRef.getCurrentPresetId());
-    presetSelector.setSelectedId (juce::jmax (0, cur) + 1, juce::dontSendNotification);
-}
+namespace Col = Worldizer::Colors;
 
 //==============================================================================
 WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProcessor& p)
-    : AudioProcessorEditor (&p), processorRef (p)
+    : AudioProcessorEditor (&p),
+      processorRef (p),
+      presetBrowser (p.getPresetManager())
 {
     setLookAndFeel (&lookAndFeel);
 
-    // --- Preset selector ---
-    populatePresetCombo();
-    presetSelector.setTooltip ("Choose the acoustic space (preset) to convolve through.");
-    presetSelector.onChange = [this]
+    // --- Header buttons ---
+    editButton.setEnabled (false);
+    editButton.setTooltip ("Geometry editor coming in a future update.");
+    addAndMakeVisible (editButton);
+
+    bypassButton.setClickingTogglesState (true);
+    bypassButton.setTooltip ("Pass audio through unchanged.");
+    addAndMakeVisible (bypassButton);
+    bypassAttach = std::make_unique<juce::ButtonParameterAttachment> (*p.apvts.getParameter ("bypass"), bypassButton);
+
+    // --- Sidebar ---
+    presetBrowser.setSelectedPresetId (p.getCurrentPresetId());
+    presetBrowser.setCollapsed (p.getSidebarCollapsed());
+    presetBrowser.onPresetSelected = [this] (auto id) { onPresetSelected (id); };
+    presetBrowser.onCollapseChanged = [this]
     {
-        const int idx = presetSelector.getSelectedId() - 1;
-        if (idx >= 0 && idx < presetIds.size())
-            processorRef.setCurrentPresetId (presetIds[idx]);
+        processorRef.setSidebarCollapsed (presetBrowser.isCollapsed());
+        resized();
     };
-    addAndMakeVisible (presetSelector);
+    addAndMakeVisible (presetBrowser);
 
-    presetLabel.setText ("Preset", juce::dontSendNotification);
-    presetLabel.setJustificationType (juce::Justification::centredLeft);
-    addAndMakeVisible (presetLabel);
+    // --- Room view ---
+    if (auto meta = p.getCurrentPresetMetadata())
+        roomView.setScene (meta->scene);
+    roomView.onPositionsChanged = [this] (Worldizer::Vec3 s, Worldizer::Vec3 m)
+    {
+        positionsModified = true;
+        processorRef.setSourceAndMicPositions (s, m, false);
+        updateSubtitle();
+    };
+    roomView.onPositionsFinalized = [this] (Worldizer::Vec3 s, Worldizer::Vec3 m)
+    {
+        processorRef.setSourceAndMicPositions (s, m, true);
+    };
+    addAndMakeVisible (roomView);
 
-    renderingIndicator.setText ("rendering...", juce::dontSendNotification);
-    renderingIndicator.setJustificationType (juce::Justification::centredLeft);
-    renderingIndicator.setColour (juce::Label::textColourId, LnF::Colors::accent);
-    renderingIndicator.setVisible (false);
-    addAndMakeVisible (renderingIndicator);
-
-    // --- Rotary controls ---
+    // --- Knobs ---
     auto setupKnob = [this] (juce::Slider& s, juce::Label& l, const juce::String& name, const juce::String& tip)
     {
         s.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
         s.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 72, 18);
         s.setTooltip (tip);
         addAndMakeVisible (s);
-
         l.setText (name, juce::dontSendNotification);
         l.setJustificationType (juce::Justification::centred);
+        l.setFont (juce::Font (juce::FontOptions (14.0f)));
         addAndMakeVisible (l);
     };
-
     setupKnob (inputGainSlider,  inputGainLabel,  "Input Gain",  "Gain applied before the worldizing chain.");
     setupKnob (mixSlider,        mixLabel,        "Mix",         "Blend between dry input (0%) and worldized output (100%).");
     setupKnob (outputGainSlider, outputGainLabel, "Output Gain", "Gain applied after the worldizing chain.");
+    inputGainAttach  = std::make_unique<juce::SliderParameterAttachment> (*p.apvts.getParameter ("inputGain"),  inputGainSlider);
+    mixAttach        = std::make_unique<juce::SliderParameterAttachment> (*p.apvts.getParameter ("mix"),        mixSlider);
+    outputGainAttach = std::make_unique<juce::SliderParameterAttachment> (*p.apvts.getParameter ("outputGain"), outputGainSlider);
 
-    // --- Bypass ---
-    bypassButton.setClickingTogglesState (true);
-    bypassButton.setTooltip ("Pass audio through unchanged.");
-    addAndMakeVisible (bypassButton);
-
-    // --- Audition test signals ---
-    auditionLabel.setText ("Audition", juce::dontSendNotification);
-    auditionLabel.setJustificationType (juce::Justification::centredLeft);
-    addAndMakeVisible (auditionLabel);
-
-    const auto testNames = WorldizerAudioProcessor::getTestSignalNames();
-    for (int i = 0; i < (int) testButtons.size(); ++i)
+    // --- Audition buttons ---
+    auto setupAudition = [this] (juce::TextButton& b, int index, const juce::String& sig)
     {
-        auto& btn = testButtons[(size_t) i];
-        btn.setButtonText (i < testNames.size() ? testNames[i] : juce::String (i + 1));
-        btn.setTooltip ("Play a built-in " + btn.getButtonText().toLowerCase()
-                        + " test signal through the current scene (no host content needed).");
-        btn.onClick = [this, i] { processorRef.triggerTestSignal (i); };
-        addAndMakeVisible (btn);
-    }
+        b.setTooltip ("Play a built-in " + sig + " test signal through the current preset.");
+        b.onClick = [this, index] { processorRef.triggerTestSignal (index); };
+        addAndMakeVisible (b);
+    };
+    setupAudition (clickButton, 0, "click");
+    setupAudition (sweepButton, 1, "sweep");
+    setupAudition (noiseButton, 2, "noise");
 
-    // --- Parameter attachments ---
-    inputGainAttach  = std::make_unique<juce::SliderParameterAttachment> (*processorRef.apvts.getParameter ("inputGain"),  inputGainSlider);
-    mixAttach        = std::make_unique<juce::SliderParameterAttachment> (*processorRef.apvts.getParameter ("mix"),        mixSlider);
-    outputGainAttach = std::make_unique<juce::SliderParameterAttachment> (*processorRef.apvts.getParameter ("outputGain"), outputGainSlider);
-    bypassAttach     = std::make_unique<juce::ButtonParameterAttachment> (*processorRef.apvts.getParameter ("bypass"),     bypassButton);
+    // --- Rendering indicator ---
+    renderingIndicator.setText ("rendering...", juce::dontSendNotification);
+    renderingIndicator.setJustificationType (juce::Justification::centred);
+    renderingIndicator.setColour (juce::Label::textColourId, Col::primary);
+    renderingIndicator.setVisible (false);
+    addAndMakeVisible (renderingIndicator);
 
-    setSize (600, 320);
-    setResizable (false, false);
+    // --- Footer ---
+    githubLink.setButtonText ("github.com/zqsfx/worldizer");
+    githubLink.setURL (juce::URL ("https://github.com/zqsfx/worldizer"));
+    githubLink.setFont (juce::Font (juce::FontOptions (9.0f)), false, juce::Justification::centredRight);
+    githubLink.setColour (juce::HyperlinkButton::textColourId, Col::onSurfaceMuted);
+    addAndMakeVisible (githubLink);
+
+    updateSubtitle();
+
+    setSize (Worldizer::kDefaultWindowWidth, Worldizer::kDefaultWindowHeight);
+    setResizable (true, true);
+    setResizeLimits (Worldizer::kMinWindowWidth, Worldizer::kMinWindowHeight,
+                     Worldizer::kMaxWindowWidth, Worldizer::kMaxWindowHeight);
 
     startTimerHz (10);
 }
@@ -104,85 +108,116 @@ WorldizerAudioProcessorEditor::~WorldizerAudioProcessorEditor()
 }
 
 //==============================================================================
+void WorldizerAudioProcessorEditor::onPresetSelected (const juce::String& presetId)
+{
+    processorRef.setCurrentPresetId (presetId);
+    positionsModified = false;
+    if (auto meta = processorRef.getCurrentPresetMetadata())
+        roomView.setScene (meta->scene);
+    updateSubtitle();
+}
+
+void WorldizerAudioProcessorEditor::updateSubtitle()
+{
+    juce::String preset = "—";
+    if (auto meta = processorRef.getCurrentPresetMetadata())
+        preset = meta->name;
+    subtitleText = "v" + juce::String (Worldizer::kVersionString) + "  \xe2\x80\xa2  " + preset
+                 + (positionsModified ? "*" : "");
+    repaint();
+}
+
 void WorldizerAudioProcessorEditor::timerCallback()
 {
     const bool r = processorRef.isRendering();
     if (renderingIndicator.isVisible() != r)
         renderingIndicator.setVisible (r);
 
-    // Keep the combo in sync if the preset changed outside the UI (e.g. state restore).
-    const int idx = presetIds.indexOf (processorRef.getCurrentPresetId());
-    if (idx >= 0 && presetSelector.getSelectedId() != idx + 1)
-        presetSelector.setSelectedId (idx + 1, juce::dontSendNotification);
+    // Sync the UI if the preset changed outside the browser (e.g. state restore).
+    if (processorRef.getCurrentPresetId() != presetBrowser.getSelectedPresetId())
+    {
+        presetBrowser.setSelectedPresetId (processorRef.getCurrentPresetId());
+        if (auto meta = processorRef.getCurrentPresetMetadata())
+            roomView.setScene (meta->scene);
+        positionsModified = false;
+        updateSubtitle();
+    }
 }
 
 //==============================================================================
 void WorldizerAudioProcessorEditor::paint (juce::Graphics& g)
 {
-    g.fillAll (LnF::Colors::background);
+    g.fillAll (Col::background);
 
-    // Header accent line
-    g.setColour (LnF::Colors::accent.withAlpha (0.5f));
-    g.fillRect (12, 6, getWidth() - 24, 2);
+    // Accent line
+    g.setColour (Col::primaryAlpha40);
+    g.fillRect (0, 0, getWidth(), 6);
 
-    // Title + version
-    g.setColour (LnF::Colors::onSurface);
-    g.setFont (juce::Font (juce::FontOptions (20.0f).withStyle ("Bold")));
-    g.drawText ("WORLDIZER", 12, 16, 320, 24, juce::Justification::centredLeft, false);
+    // Title + subtitle
+    g.setColour (Col::primary);
+    g.setFont (juce::Font (juce::FontOptions (18.0f).withStyle ("Bold")));
+    g.drawText ("WORLDIZER", 12, 14, 320, 24, juce::Justification::centredLeft);
 
-    g.setColour (LnF::Colors::outline);
+    g.setColour (Col::onSurfaceVariant);
     g.setFont (juce::Font (juce::FontOptions (11.0f)));
-    g.drawText ("v" + juce::String (Worldizer::kVersionString), 12, 40, 120, 14, juce::Justification::centredLeft, false);
+    g.drawText (subtitleText, 12, 40, getWidth() - 200, 16, juce::Justification::centredLeft);
 
-    // Section dividers
-    g.setColour (LnF::Colors::outline.withAlpha (0.3f));
-    g.drawHorizontalLine (60,  12.0f, (float) getWidth() - 12.0f);
-    g.drawHorizontalLine (158, 12.0f, (float) getWidth() - 12.0f);
-
-    // Footer
-    g.setColour (LnF::Colors::outline);
-    g.setFont (juce::Font (juce::FontOptions (10.0f)));
-    g.drawText ("ZQSFX  |  github.com/zqsfx/worldizer",
-                getLocalBounds().removeFromBottom (28).reduced (12, 6),
-                juce::Justification::centredRight, false);
+    // Control-row cluster dividers
+    if (! controlRowBounds.isEmpty())
+    {
+        g.setColour (Col::outline);
+        const int x1 = controlRowBounds.getX() + (int) (controlRowBounds.getWidth() * 0.48f);
+        const int x2 = controlRowBounds.getX() + (int) (controlRowBounds.getWidth() * 0.78f);
+        g.drawVerticalLine (x1, (float) controlRowBounds.getY() + 8, (float) controlRowBounds.getBottom() - 8);
+        g.drawVerticalLine (x2, (float) controlRowBounds.getY() + 8, (float) controlRowBounds.getBottom() - 8);
+        g.drawHorizontalLine (controlRowBounds.getY(), 0.0f, (float) getWidth());
+    }
 }
 
 void WorldizerAudioProcessorEditor::resized()
 {
     auto area = getLocalBounds();
+    area.removeFromTop (6); // accent line
 
     auto header = area.removeFromTop (60);
-    bypassButton.setBounds (header.getRight() - 90, 17, 78, 26);
+    bypassButton.setBounds (header.getRight() - 12 - 80, header.getY() + 16, 80, 28);
+    editButton.setBounds   (bypassButton.getX() - 8 - 80, header.getY() + 16, 80, 28);
 
-    auto presetRow = area.removeFromTop (48).reduced (12, 9);
-    presetLabel.setBounds (presetRow.removeFromLeft (50));
-    presetSelector.setBounds (presetRow.removeFromLeft (240));
-    presetRow.removeFromLeft (12);
-    renderingIndicator.setBounds (presetRow);
+    auto footer = area.removeFromBottom (24);
+    githubLink.setBounds (footer.removeFromRight (260).reduced (8, 4));
 
-    auto auditionRow = area.removeFromTop (50).reduced (12, 9);
-    auditionLabel.setBounds (auditionRow.removeFromLeft (64));
-    auditionRow.removeFromLeft (6);
-    const int gap = 8;
-    const int btnW = (auditionRow.getWidth() - 2 * gap) / 3;
-    for (int i = 0; i < (int) testButtons.size(); ++i)
+    controlRowBounds = area.removeFromBottom (130);
     {
-        testButtons[(size_t) i].setBounds (auditionRow.removeFromLeft (btnW));
-        if (i < 2) auditionRow.removeFromLeft (gap);
+        auto cr = controlRowBounds.reduced (12, 10);
+        auto knobArea     = cr.removeFromLeft ((int) (controlRowBounds.getWidth() * 0.48f));
+        auto auditionArea = cr.removeFromLeft ((int) (controlRowBounds.getWidth() * 0.30f));
+        auto indicatorArea = cr;
+
+        auto placeKnob = [] (juce::Slider& s, juce::Label& l, juce::Rectangle<int> colm)
+        {
+            const int kd = 78;
+            const int kx = colm.getCentreX() - kd / 2;
+            s.setBounds (kx, colm.getY(), kd, kd + 18);
+            l.setBounds (colm.getX(), colm.getY() + kd + 18, colm.getWidth(), 16);
+        };
+        const int colW = knobArea.getWidth() / 3;
+        placeKnob (inputGainSlider,  inputGainLabel,  knobArea.removeFromLeft (colW));
+        placeKnob (mixSlider,        mixLabel,        knobArea.removeFromLeft (colW));
+        placeKnob (outputGainSlider, outputGainLabel, knobArea);
+
+        auto ab = auditionArea.withSizeKeepingCentre (auditionArea.getWidth() - 12, 32);
+        const int bw = (ab.getWidth() - 16) / 3;
+        clickButton.setBounds (ab.removeFromLeft (bw)); ab.removeFromLeft (8);
+        sweepButton.setBounds (ab.removeFromLeft (bw)); ab.removeFromLeft (8);
+        noiseButton.setBounds (ab.removeFromLeft (bw));
+
+        renderingIndicator.setBounds (indicatorArea);
     }
 
-    area.removeFromBottom (30); // footer
-
-    auto controls = area.reduced (12, 8);
-    const int colW = controls.getWidth() / 3;
-
-    auto place = [] (juce::Slider& s, juce::Label& l, juce::Rectangle<int> c)
-    {
-        s.setBounds (c.removeFromTop (96));
-        l.setBounds (c.removeFromTop (18));
-    };
-
-    place (inputGainSlider,  inputGainLabel,  controls.removeFromLeft (colW));
-    place (mixSlider,        mixLabel,        controls.removeFromLeft (colW));
-    place (outputGainSlider, outputGainLabel, controls);
+    // Sidebar + room view fill the rest.
+    auto content = area.reduced (12, 8);
+    const int sidebarW = presetBrowser.isCollapsed() ? 32 : 200;
+    presetBrowser.setBounds (content.removeFromLeft (sidebarW));
+    content.removeFromLeft (12);
+    roomView.setBounds (content);
 }

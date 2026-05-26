@@ -1,0 +1,214 @@
+#include "PresetBrowser.h"
+#include "RoomView2D.h"
+#include "../Shared/WorldizerLookAndFeel.h"
+
+namespace Worldizer
+{
+//==============================================================================
+PresetEntry::PresetEntry (juce::String id, juce::String name, juce::String cat, juce::Image thumb)
+    : presetId (std::move (id)), displayName (std::move (name)), category (std::move (cat)), thumbnail (std::move (thumb))
+{
+    setInterceptsMouseClicks (true, false);
+}
+
+void PresetEntry::setSelected (bool s) { if (selected != s) { selected = s; repaint(); } }
+
+void PresetEntry::paint (juce::Graphics& g)
+{
+    auto b = getLocalBounds();
+
+    if (selected)      g.fillAll (Colors::surfaceVariant);
+    else if (hovered)  g.fillAll (Colors::surface.brighter (0.06f));
+
+    if (selected)
+    {
+        g.setColour (Colors::primary);
+        g.fillRect (0, 0, 3, getHeight());
+    }
+
+    auto thumbArea = b.removeFromLeft (56).reduced (8);
+    if (thumbnail.isValid())
+        g.drawImage (thumbnail, thumbArea.toFloat(), juce::RectanglePlacement::centred | juce::RectanglePlacement::onlyReduceInSize);
+    else
+    {
+        g.setColour (Colors::surfaceVariant);
+        g.fillRect (thumbArea);
+    }
+
+    auto text = b.reduced (4, 6);
+    g.setColour (Colors::onSurface);
+    g.setFont (juce::Font (juce::FontOptions (13.0f)));
+    g.drawText (displayName, text.removeFromTop (20), juce::Justification::centredLeft, true);
+
+    g.setColour (Colors::onSurfaceMuted);
+    g.setFont (juce::Font (juce::FontOptions (9.0f).withStyle ("Bold")));
+    g.drawText (category.toUpperCase(), text.removeFromTop (14), juce::Justification::centredLeft, true);
+}
+
+void PresetEntry::mouseDown (const juce::MouseEvent&) { if (onClicked) onClicked(); }
+void PresetEntry::mouseEnter (const juce::MouseEvent&) { hovered = true; repaint(); }
+void PresetEntry::mouseExit  (const juce::MouseEvent&) { hovered = false; repaint(); }
+
+//==============================================================================
+PresetBrowser::PresetBrowser (PresetManager& mgr) : presetManager (mgr)
+{
+    collapseButton.setTooltip ("Collapse the preset browser.");
+    collapseButton.onClick = [this] { setCollapsed (! collapsed); };
+    addAndMakeVisible (collapseButton);
+
+    searchBox.setTextToShowWhenEmpty ("search", Colors::onSurfaceMuted);
+    searchBox.setFont (juce::Font (juce::FontOptions (13.0f)));
+    searchBox.onTextChange = [this] { searchText = searchBox.getText(); layoutList(); };
+    addAndMakeVisible (searchBox);
+
+    listViewport.setViewedComponent (&listContents, false);
+    listViewport.setScrollBarsShown (true, false);
+    addAndMakeVisible (listViewport);
+
+    saveAsButton.setEnabled (false);
+    saveAsButton.setTooltip ("Save the current geometry as a new preset (available in edit mode — coming in a future update).");
+    addAndMakeVisible (saveAsButton);
+
+    rebuildList();
+
+    lastUserFolderMTime = PresetManager::getUserPresetsFolder().getLastModificationTime();
+    startTimer (1000);
+}
+
+PresetBrowser::~PresetBrowser() { stopTimer(); }
+
+void PresetBrowser::setSelectedPresetId (const juce::String& id)
+{
+    selectedPresetId = id;
+    for (auto* e : entries)
+        e->setSelected (e->getPresetId() == id);
+}
+
+void PresetBrowser::setCollapsed (bool shouldBeCollapsed)
+{
+    if (collapsed == shouldBeCollapsed)
+        return;
+
+    collapsed = shouldBeCollapsed;
+    collapseButton.setButtonText (collapsed ? ">" : "<");
+
+    searchBox.setVisible (! collapsed);
+    listViewport.setVisible (! collapsed);
+    saveAsButton.setVisible (! collapsed);
+
+    resized();
+    repaint();
+    if (onCollapseChanged)
+        onCollapseChanged();
+}
+
+void PresetBrowser::rebuildList()
+{
+    entries.clear();
+    listContents.removeAllChildren();
+
+    const auto all = presetManager.getAvailablePresetMetadata();
+    for (int i = 0; i < all.size(); ++i)
+    {
+        const auto& m = all.getReference (i);
+        juce::Image thumb = m.thumbnail.isValid() ? m.thumbnail : renderSceneThumbnail (m.scene, 40, 40);
+
+        auto* e = new PresetEntry (m.presetId, m.name, m.category, thumb);
+        const juce::String id = m.presetId;
+        e->onClicked = [this, id]
+        {
+            setSelectedPresetId (id);
+            if (onPresetSelected)
+                onPresetSelected (id);
+        };
+        e->setSelected (m.presetId == selectedPresetId);
+        // Stash a search key in the component name (lowercased name+category+tags).
+        e->setName ((m.name + " " + m.category + " " + m.tags.joinIntoString (" ")).toLowerCase());
+        entries.add (e);
+        listContents.addAndMakeVisible (e);
+    }
+
+    layoutList();
+}
+
+void PresetBrowser::layoutList()
+{
+    const int w = juce::jmax (10, listViewport.getWidth() - 8);
+    const int rowH = 56;
+    const auto needle = searchText.trim().toLowerCase();
+
+    int y = 0;
+    for (auto* e : entries)
+    {
+        const bool match = needle.isEmpty() || e->getName().contains (needle);
+        e->setVisible (match);
+        if (match)
+        {
+            e->setBounds (0, y, w, rowH);
+            y += rowH;
+        }
+    }
+    listContents.setSize (w, juce::jmax (y, listViewport.getHeight()));
+}
+
+void PresetBrowser::timerCallback()
+{
+    const auto folder = PresetManager::getUserPresetsFolder();
+    const auto mtime = folder.getLastModificationTime();
+    if (mtime != lastUserFolderMTime)
+    {
+        lastUserFolderMTime = mtime;
+        presetManager.rescan();
+        rebuildList();
+    }
+}
+
+void PresetBrowser::mouseDown (const juce::MouseEvent&)
+{
+    if (collapsed)
+        setCollapsed (false);
+}
+
+void PresetBrowser::paint (juce::Graphics& g)
+{
+    g.fillAll (Colors::surface);
+    g.setColour (Colors::outline);
+    g.drawVerticalLine (getWidth() - 1, 0.0f, (float) getHeight());
+
+    if (collapsed)
+    {
+        g.setColour (Colors::onSurfaceVariant);
+        g.setFont (juce::Font (juce::FontOptions (11.0f).withStyle ("Bold")));
+        juce::Graphics::ScopedSaveState save (g);
+        g.addTransform (juce::AffineTransform::rotation (-juce::MathConstants<float>::halfPi,
+                                                         getWidth() * 0.5f, getHeight() * 0.5f));
+        g.drawText ("BROWSE", juce::Rectangle<int> (-getHeight() / 2, 0, getHeight(), getWidth()).withCentre ({ getWidth() / 2, getHeight() / 2 }),
+                    juce::Justification::centred);
+        return;
+    }
+
+    g.setColour (Colors::onSurfaceVariant);
+    g.setFont (juce::Font (juce::FontOptions (10.0f).withStyle ("Bold")));
+    g.drawText ("PRESETS", 12, 0, getWidth() - 50, 28, juce::Justification::centredLeft);
+}
+
+void PresetBrowser::resized()
+{
+    auto b = getLocalBounds();
+
+    if (collapsed)
+    {
+        collapseButton.setBounds (b.removeFromTop (28).reduced (4));
+        return;
+    }
+
+    auto header = b.removeFromTop (28);
+    collapseButton.setBounds (header.removeFromRight (28).reduced (3));
+
+    searchBox.setBounds (b.removeFromTop (32).reduced (8, 4));
+    saveAsButton.setBounds (b.removeFromBottom (36).reduced (8, 6));
+    listViewport.setBounds (b.reduced (4, 2));
+
+    layoutList();
+}
+} // namespace Worldizer

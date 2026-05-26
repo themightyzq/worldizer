@@ -2,7 +2,6 @@
 #include "../DSP/ConvolutionEngine.h"
 #include "../DSP/RayTracer.h"
 #include "../DSP/IRBuilder.h"
-#include "../Model/TestScenes.h"
 
 namespace Worldizer
 {
@@ -28,22 +27,15 @@ void RenderThread::requestRender (const Job& job)
     wakeup.signal();
 }
 
-juce::String RenderThread::getLastRenderedScene() const
-{
-    const juce::ScopedLock sl (lastSceneLock);
-    return lastRenderedScene;
-}
-
 void RenderThread::run()
 {
     while (! threadShouldExit())
     {
-        wakeup.wait(); // blocks until a job is queued (or shutdown)
+        wakeup.wait();
 
         if (threadShouldExit())
             break;
 
-        // Take the most recent pending job.
         std::unique_ptr<Job> job;
         {
             const juce::ScopedLock sl (jobLock);
@@ -55,35 +47,33 @@ void RenderThread::run()
 
         rendering.store (true);
 
-        bool ok = false;
-        Scene scene = TestScenes::byName (job->sceneName, ok);
-
-        if (ok)
+        RayTracer tracer;
+        RayTracer::Settings rt;
+        if (job->quality == Job::Quality::Preview)
         {
-            RayTracer tracer;
-            RayTracer::Settings traceSettings;
-            traceSettings.numRays    = job->numRays;
-            traceSettings.maxBounces = job->maxBounces;
-            traceSettings.randomSeed = job->randomSeed;
-
-            const auto result = tracer.trace (scene, traceSettings, 48000);
-
-            IRBuilder builder;
-            IRBuilder::Settings irSettings;
-            irSettings.sampleRate = 48000;
-            const auto ir = builder.build (result, irSettings);
-
-            // Don't clobber the idle convolver while a crossfade is still running.
-            while (engine.isIRPending() && ! threadShouldExit())
-                juce::Thread::sleep (2);
-
-            if (! threadShouldExit())
-            {
-                engine.loadIR (ir, 48000.0, job->crossfadeMs);
-                const juce::ScopedLock sl (lastSceneLock);
-                lastRenderedScene = job->sceneName;
-            }
+            rt.numRays = 5000;
+            rt.maxBounces = 12;
         }
+        else
+        {
+            rt.numRays = 50000;
+            rt.maxBounces = 32;
+        }
+        rt.randomSeed = 12345;
+
+        const auto result = tracer.trace (job->scene, rt, 48000);
+
+        IRBuilder builder;
+        IRBuilder::Settings irSettings;
+        irSettings.sampleRate = 48000;
+        const auto ir = builder.build (result, irSettings);
+
+        // Don't clobber the idle convolver mid-crossfade.
+        while (engine.isIRPending() && ! threadShouldExit())
+            juce::Thread::sleep (2);
+
+        if (! threadShouldExit())
+            engine.loadIR (ir, 48000.0, job->crossfadeMs);
 
         rendering.store (false);
     }

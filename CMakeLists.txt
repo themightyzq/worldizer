@@ -106,9 +106,11 @@ target_sources(Worldizer
         Source/IO/WzPresetIO.h
         Source/IO/WzPresetIO.cpp
 
-        # --- UI (stubs) ---
+        # --- UI ---
         Source/UI/PresetBrowser.h
+        Source/UI/PresetBrowser.cpp
         Source/UI/RoomView2D.h
+        Source/UI/RoomView2D.cpp
 )
 
 target_include_directories(Worldizer
@@ -187,6 +189,7 @@ target_sources(BakePresets
         Source/DSP/IRBuilder.cpp
         Source/DSP/AirAbsorption.cpp
         Source/IO/WzPresetIO.cpp
+        Source/UI/RoomView2D.cpp
 )
 
 target_compile_definitions(BakePresets
