@@ -1,6 +1,7 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include "WorldizerBinaryData.h"
+#include <cmath>
 
 using namespace Worldizer;
 
@@ -93,6 +94,70 @@ void WorldizerAudioProcessor::requestSceneRender (const juce::String& sceneName,
 }
 
 //==============================================================================
+juce::StringArray WorldizerAudioProcessor::getTestSignalNames()
+{
+    return { "Click", "Sweep", "Noise" };
+}
+
+void WorldizerAudioProcessor::triggerTestSignal (int index)
+{
+    if (index >= 0 && index < kNumTestSignals)
+        testSignalRequested.store (index);
+}
+
+void WorldizerAudioProcessor::generateTestSignals (double sampleRate)
+{
+    const int sr = (int) sampleRate;
+    juce::Random rng (1234);
+
+    // 0: Click — three short decaying-noise transients (reveals reflections).
+    {
+        const int len = juce::jmax (1, (int) (1.0 * sr));
+        auto& b = testSignals[0]; b.setSize (1, len); b.clear();
+        auto* d = b.getWritePointer (0);
+        auto click = [&] (double at)
+        {
+            const int start = (int) (at * sr);
+            const int n     = (int) (0.004 * sr);
+            for (int i = 0; i < n && start + i < len; ++i)
+                d[start + i] += 0.8f * std::exp (-(float) i / (0.0015f * (float) sr)) * (rng.nextFloat() * 2.0f - 1.0f);
+        };
+        click (0.05); click (0.40); click (0.75);
+    }
+
+    // 1: Sweep — 3 s exponential 20 Hz -> 20 kHz (reveals frequency response).
+    {
+        const double T = 3.0, f1 = 20.0, f2 = 20000.0;
+        const int len = juce::jmax (1, (int) (T * sr));
+        auto& b = testSignals[1]; b.setSize (1, len); b.clear();
+        auto* d = b.getWritePointer (0);
+        const double w1 = 2.0 * juce::MathConstants<double>::pi * f1;
+        const double L  = std::log (f2 / f1);
+        const double K  = w1 * T / L;
+        for (int i = 0; i < len; ++i)
+        {
+            const double t = (double) i / sr;
+            d[i] = 0.5f * (float) std::sin (K * (std::exp (t / T * L) - 1.0));
+        }
+        const int fi = (int) (0.02 * sr), fo = (int) (0.03 * sr);
+        for (int i = 0; i < fi && i < len; ++i) d[i]           *= (float) i / (float) fi;
+        for (int i = 0; i < fo && i < len; ++i) d[len - 1 - i] *= (float) i / (float) fo;
+    }
+
+    // 2: Noise — 0.6 s broadband burst, smooth in, hard stop (exposes the tail).
+    {
+        const int len = juce::jmax (1, (int) (0.6 * sr));
+        auto& b = testSignals[2]; b.setSize (1, len); b.clear();
+        auto* d = b.getWritePointer (0);
+        for (int i = 0; i < len; ++i) d[i] = 0.4f * (rng.nextFloat() * 2.0f - 1.0f);
+        const int fi = (int) (0.02 * sr);
+        for (int i = 0; i < fi && i < len; ++i) d[i] *= (float) i / (float) fi;
+        const int fo = juce::jmax (1, (int) (0.001 * sr));
+        for (int i = 0; i < fo && i < len; ++i) d[len - 1 - i] *= (float) i / (float) fo;
+    }
+}
+
+//==============================================================================
 void WorldizerAudioProcessor::loadEmbeddedDefaultIR()
 {
     juce::WavAudioFormat wav;
@@ -128,6 +193,10 @@ void WorldizerAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBl
     const int scratchLen = juce::jmax (samplesPerBlock, 8192);
     dryScratch.setSize (numCh, scratchLen, false, false, true);
     mixRamp.assign ((size_t) scratchLen, 0.0f);
+
+    generateTestSignals (sampleRate);
+    activeTestSignal = -1;
+    testSignalRequested.store (-1);
 
     bypassValue     = apvts.getRawParameterValue ("bypass");
     inputGainValue  = apvts.getRawParameterValue ("inputGain");
@@ -179,6 +248,29 @@ void WorldizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
 
     if (bypassValue->load() >= 0.5f)
         return; // pass through unchanged
+
+    // Built-in audition: replace the input with a generated test signal while one plays.
+    const int req = testSignalRequested.exchange (-1);
+    if (req >= 0)
+    {
+        activeTestSignal = req;
+        testSignalPos    = 0;
+    }
+    if (activeTestSignal >= 0)
+    {
+        const auto& sig  = testSignals[(size_t) activeTestSignal];
+        const int   sigLen = sig.getNumSamples();
+        const auto* src  = sig.getReadPointer (0);
+        for (int i = 0; i < numSamples; ++i)
+        {
+            const float s = (testSignalPos < sigLen) ? src[(size_t) testSignalPos] : 0.0f;
+            for (int ch = 0; ch < numCh; ++ch)
+                buffer.getWritePointer (ch)[i] = s;
+            ++testSignalPos;
+        }
+        if (testSignalPos >= sigLen)
+            activeTestSignal = -1;
+    }
 
     inputGain.setGainDecibels (inputGainValue->load());
     outputGain.setGainDecibels (outputGainValue->load());

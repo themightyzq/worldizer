@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <array>
 #include "../DSP/ConvolutionEngine.h"
 #include "RenderThread.h"
 #include "../Shared/Constants.h"
@@ -57,6 +58,13 @@ public:
     static juce::StringArray getAvailableSceneNames();
     bool isRendering() const noexcept;
 
+    // === Built-in audition test signals ===
+    /** Triggers a built-in dry test signal to play once through the worldizing
+        chain (so a scene can be auditioned without host content). Index matches
+        getTestSignalNames(). RT-safe to call from the message thread. */
+    void triggerTestSignal (int index);
+    static juce::StringArray getTestSignalNames();
+
     juce::AudioProcessorValueTreeState apvts;
 
 private:
@@ -87,6 +95,14 @@ private:
 
     juce::AudioBuffer<float> dryScratch;
     std::vector<float>       mixRamp;
+
+    // Built-in audition test signals (generated in prepareToPlay).
+    void generateTestSignals (double sampleRate);
+    static constexpr int kNumTestSignals = 3;
+    std::array<juce::AudioBuffer<float>, (size_t) kNumTestSignals> testSignals;
+    std::atomic<int> testSignalRequested { -1 };
+    int activeTestSignal = -1;  // audio-thread only
+    int testSignalPos    = 0;   // audio-thread only
 
     std::atomic<bool> prepared { false };
 

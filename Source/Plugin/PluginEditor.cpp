@@ -68,13 +68,29 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
     bypassButton.setTooltip ("Pass audio through unchanged.");
     addAndMakeVisible (bypassButton);
 
+    // --- Audition test signals ---
+    auditionLabel.setText ("Audition", juce::dontSendNotification);
+    auditionLabel.setJustificationType (juce::Justification::centredLeft);
+    addAndMakeVisible (auditionLabel);
+
+    const auto testNames = WorldizerAudioProcessor::getTestSignalNames();
+    for (int i = 0; i < (int) testButtons.size(); ++i)
+    {
+        auto& btn = testButtons[(size_t) i];
+        btn.setButtonText (i < testNames.size() ? testNames[i] : juce::String (i + 1));
+        btn.setTooltip ("Play a built-in " + btn.getButtonText().toLowerCase()
+                        + " test signal through the current scene (no host content needed).");
+        btn.onClick = [this, i] { processorRef.triggerTestSignal (i); };
+        addAndMakeVisible (btn);
+    }
+
     // --- Parameter attachments ---
     inputGainAttach  = std::make_unique<juce::SliderParameterAttachment> (*processorRef.apvts.getParameter ("inputGain"),  inputGainSlider);
     mixAttach        = std::make_unique<juce::SliderParameterAttachment> (*processorRef.apvts.getParameter ("mix"),        mixSlider);
     outputGainAttach = std::make_unique<juce::SliderParameterAttachment> (*processorRef.apvts.getParameter ("outputGain"), outputGainSlider);
     bypassAttach     = std::make_unique<juce::ButtonParameterAttachment> (*processorRef.apvts.getParameter ("bypass"),     bypassButton);
 
-    setSize (600, 280);
+    setSize (600, 320);
     setResizable (false, false);
 
     startTimerHz (10);
@@ -120,7 +136,7 @@ void WorldizerAudioProcessorEditor::paint (juce::Graphics& g)
     // Section dividers
     g.setColour (LnF::Colors::outline.withAlpha (0.3f));
     g.drawHorizontalLine (60,  12.0f, (float) getWidth() - 12.0f);
-    g.drawHorizontalLine (110, 12.0f, (float) getWidth() - 12.0f);
+    g.drawHorizontalLine (158, 12.0f, (float) getWidth() - 12.0f);
 
     // Footer
     g.setColour (LnF::Colors::outline);
@@ -137,11 +153,22 @@ void WorldizerAudioProcessorEditor::resized()
     auto header = area.removeFromTop (60);
     bypassButton.setBounds (header.getRight() - 90, 17, 78, 26);
 
-    auto sceneRow = area.removeFromTop (50).reduced (12, 10);
+    auto sceneRow = area.removeFromTop (48).reduced (12, 9);
     sceneLabel.setBounds (sceneRow.removeFromLeft (50));
     sceneSelector.setBounds (sceneRow.removeFromLeft (240));
     sceneRow.removeFromLeft (12);
     renderingIndicator.setBounds (sceneRow);
+
+    auto auditionRow = area.removeFromTop (50).reduced (12, 9);
+    auditionLabel.setBounds (auditionRow.removeFromLeft (64));
+    auditionRow.removeFromLeft (6);
+    const int gap = 8;
+    const int btnW = (auditionRow.getWidth() - 2 * gap) / 3;
+    for (int i = 0; i < (int) testButtons.size(); ++i)
+    {
+        testButtons[(size_t) i].setBounds (auditionRow.removeFromLeft (btnW));
+        if (i < 2) auditionRow.removeFromLeft (gap);
+    }
 
     area.removeFromBottom (30); // footer
 

@@ -36,6 +36,9 @@ private:
 
     juce::TextButton bypassButton { "Bypass" };
 
+    juce::Label auditionLabel;
+    std::array<juce::TextButton, 3> testButtons;
+
     std::unique_ptr<juce::SliderParameterAttachment> inputGainAttach, mixAttach, outputGainAttach;
     std::unique_ptr<juce::ButtonParameterAttachment> bypassAttach;
 
