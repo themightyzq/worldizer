@@ -151,19 +151,21 @@ void WorldizerAudioProcessor::generateTestSignals (double sampleRate)
     const int sr = (int) sampleRate;
     juce::Random rng (1234);
 
-    // 0: Click — three short decaying-noise transients (reveals reflections).
+    // 0: Click — short decaying-noise transients (reveals reflections). Beefed up
+    //    (4 of them, ~9 ms each) so they carry more perceived loudness; a single
+    //    4 ms click reads far quieter than a sustained tone of the same RMS.
     {
-        const int len = juce::jmax (1, (int) (1.0 * sr));
+        const int len = juce::jmax (1, (int) (1.1 * sr));
         auto& b = testSignals[0]; b.setSize (1, len); b.clear();
         auto* d = b.getWritePointer (0);
         auto click = [&] (double at)
         {
             const int start = (int) (at * sr);
-            const int n     = (int) (0.004 * sr);
+            const int n     = (int) (0.009 * sr);
             for (int i = 0; i < n && start + i < len; ++i)
-                d[start + i] += 0.8f * std::exp (-(float) i / (0.0015f * (float) sr)) * (rng.nextFloat() * 2.0f - 1.0f);
+                d[start + i] += std::exp (-(float) i / (0.0025f * (float) sr)) * (rng.nextFloat() * 2.0f - 1.0f);
         };
-        click (0.05); click (0.40); click (0.75);
+        click (0.05); click (0.33); click (0.61); click (0.89);
     }
 
     // 1: Sweep — 3 s exponential 20 Hz -> 20 kHz (reveals frequency response).
@@ -185,9 +187,10 @@ void WorldizerAudioProcessor::generateTestSignals (double sampleRate)
         for (int i = 0; i < fo && i < len; ++i) d[len - 1 - i] *= (float) i / (float) fo;
     }
 
-    // 2: Noise — 0.6 s broadband burst, smooth in, hard stop (exposes the tail).
+    // 2: Noise — 1.0 s broadband burst, smooth in, hard stop (exposes the tail;
+    //    longer than before for more perceived presence vs the sustained sweep).
     {
-        const int len = juce::jmax (1, (int) (0.6 * sr));
+        const int len = juce::jmax (1, (int) (1.0 * sr));
         auto& b = testSignals[2]; b.setSize (1, len); b.clear();
         auto* d = b.getWritePointer (0);
         for (int i = 0; i < len; ++i) d[i] = 0.4f * (rng.nextFloat() * 2.0f - 1.0f);
@@ -197,9 +200,13 @@ void WorldizerAudioProcessor::generateTestSignals (double sampleRate)
         for (int i = 0; i < fo && i < len; ++i) d[len - 1 - i] *= (float) i / (float) fo;
     }
 
-    // Match perceived loudness across all three (active-region RMS, peak-capped).
-    for (auto& b : testSignals)
-        normalizeActiveRms (b, 0.18f, 0.89f); // ~ -15 dBFS RMS, -1 dBFS peak ceiling
+    // Loudness balance (by ear, since RMS != perceived loudness here): the sustained
+    // sweep reads much louder per unit energy than transient clicks / broadband noise,
+    // so the sweep comes down a touch and the others go up. The click is transient-
+    // limited — maxed to the peak ceiling, which is as loud as a short click can get.
+    normalizeActiveRms (testSignals[0], 0.50f, 0.89f); // Click  -> peak-ceiling limited (-1 dBFS)
+    normalizeActiveRms (testSignals[1], 0.15f, 0.89f); // Sweep  -> brought down ~1.5 dB
+    normalizeActiveRms (testSignals[2], 0.22f, 0.89f); // Noise  -> up + longer for presence
 }
 
 //==============================================================================
