@@ -14,10 +14,14 @@ namespace Worldizer
 {
 juce::File PresetManager::getUserPresetsFolder()
 {
-    auto folder = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
-                      .getChildFile ("ZQSFX")
-                      .getChildFile ("Worldizer")
-                      .getChildFile ("Presets");
+    auto base = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory);
+   #if JUCE_MAC
+    // On macOS userApplicationDataDirectory is ~/Library; the convention is
+    // ~/Library/Application Support. (Windows %APPDATA% / Linux ~/.config are correct as-is.)
+    base = base.getChildFile ("Application Support");
+   #endif
+
+    auto folder = base.getChildFile ("ZQSFX").getChildFile ("Worldizer").getChildFile ("Presets");
     folder.createDirectory();
     return folder;
 }
