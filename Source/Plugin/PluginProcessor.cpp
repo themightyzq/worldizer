@@ -204,9 +204,9 @@ void WorldizerAudioProcessor::generateTestSignals (double sampleRate)
     // sweep reads much louder per unit energy than transient clicks / broadband noise,
     // so the sweep comes down a touch and the others go up. The click is transient-
     // limited — maxed to the peak ceiling, which is as loud as a short click can get.
-    normalizeActiveRms (testSignals[0], 0.50f, 0.89f); // Click  -> peak-ceiling limited (-1 dBFS)
-    normalizeActiveRms (testSignals[1], 0.15f, 0.89f); // Sweep  -> brought down ~1.5 dB
-    normalizeActiveRms (testSignals[2], 0.22f, 0.89f); // Noise  -> up + longer for presence
+    normalizeActiveRms (testSignals[0], 0.60f, 0.95f); // Click  -> peak-ceiling limited (~-0.4 dBFS)
+    normalizeActiveRms (testSignals[1], 0.20f, 0.95f); // Sweep  -> up ~+2.5 dB
+    normalizeActiveRms (testSignals[2], 0.29f, 0.95f); // Noise  -> up ~+2.4 dB
 }
 
 //==============================================================================
@@ -298,10 +298,8 @@ void WorldizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     for (int ch = getTotalNumInputChannels(); ch < getTotalNumOutputChannels(); ++ch)
         buffer.clear (ch, 0, numSamples);
 
-    if (bypassValue->load() >= 0.5f)
-        return; // pass through unchanged
-
-    // Built-in audition: replace the input with a generated test signal while one plays.
+    // Built-in audition: inject the generated test signal (replacing the input)
+    // BEFORE the bypass check, so bypass plays the dry signal instead of muting it.
     const int req = testSignalRequested.exchange (-1);
     if (req >= 0)
     {
@@ -323,6 +321,12 @@ void WorldizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         if (testSignalPos >= sigLen)
             activeTestSignal = -1;
     }
+
+    // Bypass: skip the worldizing chain. Whatever is in the buffer (host audio or
+    // an audition signal) passes through dry, so bypass A/Bs the effect — it does
+    // not mute the source.
+    if (bypassValue->load() >= 0.5f)
+        return;
 
     inputGain.setGainDecibels (inputGainValue->load());
     outputGain.setGainDecibels (outputGainValue->load());
