@@ -25,6 +25,11 @@ cmake-build-*/
 # Claude Code local state
 .claude/
 
+# Generated preset bundles + embed blobs (regenerate with BakePresets).
+# The committed Resources/Presets/default_ir.wav cold-start bootstrap is kept.
+Resources/Presets/*.wzpreset/
+Resources/EmbeddedPresets/
+
 # CMake artifacts
 CMakeCache.txt
 CMakeFiles/

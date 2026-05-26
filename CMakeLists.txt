@@ -62,6 +62,8 @@ target_sources(Worldizer
         Source/Plugin/PluginEditor.h
         Source/Plugin/RenderThread.h
         Source/Plugin/RenderThread.cpp
+        Source/Plugin/PresetManager.h
+        Source/Plugin/PresetManager.cpp
 
         # --- Shared ---
         Source/Shared/Constants.h
@@ -74,6 +76,8 @@ target_sources(Worldizer
         Source/Model/Brush.cpp
         Source/Model/Material.h
         Source/Model/Material.cpp
+        Source/Model/MaterialResolver.h
+        Source/Model/MaterialResolver.cpp
         Source/Model/MicNode.h
         Source/Model/MicNode.cpp
         Source/Model/Scene.h
@@ -97,9 +101,10 @@ target_sources(Worldizer
         Source/DSP/RayTracer.cpp
         Source/DSP/SourceCharacter.h
 
-        # --- IO (stubs) ---
+        # --- IO ---
         Source/IO/MapImporter.h
         Source/IO/WzPresetIO.h
+        Source/IO/WzPresetIO.cpp
 
         # --- UI (stubs) ---
         Source/UI/PresetBrowser.h
@@ -143,6 +148,60 @@ target_link_libraries(Worldizer
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
+        juce::juce_recommended_warning_flags
+)
+
+# Shipped presets: embed Resources/EmbeddedPresets/*.wzpkg (one packed blob per
+# preset) if they exist. Run BakePresets once to create them; CONFIGURE_DEPENDS
+# makes the build pick them up automatically. A fresh checkout (no presets yet)
+# builds cleanly with WORLDIZER_HAS_SHIPPED_PRESETS=0.
+file(GLOB WZ_PRESET_PKGS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Resources/EmbeddedPresets/*.wzpkg")
+if(WZ_PRESET_PKGS)
+    juce_add_binary_data(WorldizerPresets
+        HEADER_NAME "WorldizerPresets.h"
+        NAMESPACE   "WorldizerPresets"
+        SOURCES     ${WZ_PRESET_PKGS})
+    target_link_libraries(Worldizer PRIVATE WorldizerPresets)
+    target_compile_definitions(Worldizer PRIVATE WORLDIZER_HAS_SHIPPED_PRESETS=1)
+else()
+    target_compile_definitions(Worldizer PRIVATE WORLDIZER_HAS_SHIPPED_PRESETS=0)
+endif()
+
+# === Slice 3: preset baking CLI tool ===
+juce_add_console_app(BakePresets
+    PRODUCT_NAME "BakePresets")
+
+juce_generate_juce_header(BakePresets)
+
+target_sources(BakePresets
+    PRIVATE
+        Tools/bake_presets/bake_presets.cpp
+        Source/Model/Material.cpp
+        Source/Model/MaterialResolver.cpp
+        Source/Model/Brush.cpp
+        Source/Model/SourceNode.cpp
+        Source/Model/MicNode.cpp
+        Source/Model/Scene.cpp
+        Source/Model/TestScenes.cpp
+        Source/DSP/RayTracer.cpp
+        Source/DSP/IRBuilder.cpp
+        Source/DSP/AirAbsorption.cpp
+        Source/IO/WzPresetIO.cpp
+)
+
+target_compile_definitions(BakePresets
+    PRIVATE
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+)
+
+target_link_libraries(BakePresets
+    PRIVATE
+        juce::juce_audio_formats
+        juce::juce_audio_basics
+        juce::juce_gui_basics   # graphics + ScopedJuceInitialiser_GUI for thumbnail rendering
+        juce::juce_dsp
+        juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags
 )
 

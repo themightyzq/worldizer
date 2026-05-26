@@ -21,15 +21,15 @@ public:
 
 private:
     void timerCallback() override;
-    static juce::String displayName (const juce::String& internalSceneName);
+    void populatePresetCombo();
 
     WorldizerAudioProcessor& processorRef;
     WorldizerLookAndFeel lookAndFeel;
 
-    juce::StringArray sceneNames;
+    juce::StringArray presetIds;   // combo index (0-based) -> preset id
 
-    juce::ComboBox  sceneSelector;
-    juce::Label     sceneLabel, renderingIndicator;
+    juce::ComboBox  presetSelector;
+    juce::Label     presetLabel, renderingIndicator;
 
     juce::Slider    inputGainSlider, mixSlider, outputGainSlider;
     juce::Label     inputGainLabel, mixLabel, outputGainLabel;

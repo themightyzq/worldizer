@@ -56,6 +56,9 @@ WorldizerAudioProcessor::WorldizerAudioProcessor()
     bypassParam = dynamic_cast<juce::AudioParameterBool*> (apvts.getParameter ("bypass"));
     jassert (bypassParam != nullptr);
 
+    presetManager = std::make_unique<PresetManager>();
+    presetManager->rescan();
+
     renderThread = std::make_unique<RenderThread> (convolution);
 }
 
@@ -91,34 +94,91 @@ juce::AudioProcessorValueTreeState::ParameterLayout WorldizerAudioProcessor::cre
 }
 
 //==============================================================================
-juce::StringArray WorldizerAudioProcessor::getAvailableSceneNames()
+juce::String WorldizerAudioProcessor::sceneNameToPresetId (const juce::String& s)
 {
-    return { "smallConcreteRoom", "hallway", "forestClearing", "gymnasium", "anechoic" };
+    if (s == "smallConcreteRoom") return "small_concrete_room";
+    if (s == "forestClearing")    return "forest_clearing";
+    if (s == "hallway" || s == "gymnasium" || s == "anechoic") return s;
+    return s; // assume it is already a preset id
 }
 
-juce::String WorldizerAudioProcessor::getCurrentSceneName() const
+juce::String WorldizerAudioProcessor::presetIdToSceneName (const juce::String& p)
 {
-    const juce::ScopedLock sl (sceneNameLock);
-    return currentSceneName;
+    if (p == "small_concrete_room") return "smallConcreteRoom";
+    if (p == "forest_clearing")     return "forestClearing";
+    if (p == "hallway" || p == "gymnasium" || p == "anechoic") return p;
+    return {};
 }
 
-void WorldizerAudioProcessor::setCurrentSceneName (const juce::String& sceneName)
+juce::String WorldizerAudioProcessor::getCurrentPresetId() const
 {
+    const juce::ScopedLock sl (presetLock);
+    return currentPresetId;
+}
+
+juce::StringArray WorldizerAudioProcessor::getAvailablePresetIds() const
+{
+    return presetManager != nullptr ? presetManager->getAvailablePresetIds() : juce::StringArray {};
+}
+
+juce::Array<Worldizer::WzPresetIO::Loaded> WorldizerAudioProcessor::getAvailablePresetMetadata() const
+{
+    return presetManager != nullptr ? presetManager->getAvailablePresetMetadata()
+                                    : juce::Array<Worldizer::WzPresetIO::Loaded> {};
+}
+
+std::optional<Worldizer::WzPresetIO::Loaded> WorldizerAudioProcessor::getCurrentPresetMetadata() const
+{
+    const juce::ScopedLock sl (presetLock);
+    return currentPresetMetadata;
+}
+
+void WorldizerAudioProcessor::setCurrentPresetId (const juce::String& presetId)
+{
+    if (presetManager == nullptr || ! presetManager->hasPreset (presetId))
     {
-        const juce::ScopedLock sl (sceneNameLock);
-        if (sceneName == currentSceneName)
-            return;
-        currentSceneName = sceneName;
+        juce::Logger::writeToLog ("Preset not found: " + presetId);
+        return;
     }
 
-    if (prepared.load())
-        requestSceneRender (sceneName, 80.0f);
+    juce::String err;
+    auto loaded = presetManager->loadPreset (presetId, err);
+    if (! loaded.has_value())
+    {
+        juce::Logger::writeToLog ("Failed to load preset " + presetId + ": " + err);
+        return;
+    }
+
+    {
+        const juce::ScopedLock sl (presetLock);
+        currentPresetId = presetId;
+        currentPresetMetadata = loaded->withoutIR();
+    }
+
+    if (loaded->ir.getNumSamples() > 0)
+    {
+        // A preset load is a file read + convolver swap — no render thread involved.
+        convolution.loadIR (loaded->ir, loaded->irSampleRate, 80.0f);
+    }
+    else
+    {
+        // Recovery path: no baked IR — render from geometry. The only time the
+        // render thread runs in normal Slice 3 use.
+        juce::Logger::writeToLog ("Preset " + presetId + " has no rendered.wav; rendering from geometry");
+        const auto sceneName = presetIdToSceneName (presetId);
+        if (sceneName.isNotEmpty())
+            requestSceneRender (sceneName, 80.0f);
+    }
 }
 
 bool WorldizerAudioProcessor::isRendering() const noexcept
 {
     return renderThread != nullptr && renderThread->isRendering();
 }
+
+// Deprecated Slice 2 shims (mapped onto the preset system).
+juce::String WorldizerAudioProcessor::getCurrentSceneName() const { return getCurrentPresetId(); }
+void WorldizerAudioProcessor::setCurrentSceneName (const juce::String& sceneName) { setCurrentPresetId (sceneNameToPresetId (sceneName)); }
 
 void WorldizerAudioProcessor::requestSceneRender (const juce::String& sceneName, float crossfadeMs)
 {
@@ -261,14 +321,15 @@ void WorldizerAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBl
 
     prepared.store (true);
 
-    // If the desired scene isn't the embedded default, render it in the background.
+    // Apply the current preset (default on first run, or the restored value): reads
+    // the baked IR from the preset library and swaps it into the convolver — no
+    // rendering. The embedded default IR loaded above already gives instant audio.
     juce::String desired;
     {
-        const juce::ScopedLock sl (sceneNameLock);
-        desired = currentSceneName;
+        const juce::ScopedLock sl (presetLock);
+        desired = currentPresetId;
     }
-    if (desired != kDefaultScene)
-        requestSceneRender (desired, 80.0f);
+    setCurrentPresetId (desired);
 }
 
 void WorldizerAudioProcessor::releaseResources()
@@ -397,8 +458,8 @@ void WorldizerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
     {
-        const juce::ScopedLock sl (sceneNameLock);
-        state.setProperty ("currentScene", currentSceneName, nullptr);
+        const juce::ScopedLock sl (presetLock);
+        state.setProperty ("currentPreset", currentPresetId, nullptr);
     }
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
@@ -412,8 +473,15 @@ void WorldizerAudioProcessor::setStateInformation (const void* data, int sizeInB
         if (state.isValid() && state.hasType (apvts.state.getType()))
         {
             apvts.replaceState (state);
-            if (state.hasProperty ("currentScene"))
-                setCurrentSceneName (state["currentScene"].toString());
+
+            juce::String presetId;
+            if (state.hasProperty ("currentPreset"))
+                presetId = state["currentPreset"].toString();
+            else if (state.hasProperty ("currentScene"))     // migrate Slice 2 sessions
+                presetId = sceneNameToPresetId (state["currentScene"].toString());
+
+            if (presetId.isNotEmpty())
+                setCurrentPresetId (presetId);
         }
     }
 }

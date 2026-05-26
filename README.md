@@ -40,9 +40,22 @@ git submodule update --init --recursive
 # 2. Configure and build (Release, Universal Binary on macOS)
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
+
+# 3. First-time setup only: bake the shipped presets, then rebuild to embed them.
+#    (A fresh checkout builds fine without this — it just has no preset library yet.)
+./build/BakePresets_artefacts/Release/BakePresets
+cmake --build build --config Release
 ```
 
 The built artefacts land in `build/Worldizer_artefacts/Release/`. With `COPY_PLUGIN_AFTER_BUILD` enabled, the VST3 is also installed to your user VST3 folder.
+
+**About the preset step:** the shipped presets (`.wzpreset` bundles) are generated
+from the test-scene definitions by the `BakePresets` tool and embedded into the
+plugin. They are not committed to the repo, so on a fresh checkout you run
+`BakePresets` once and rebuild. After that, rebuilds pick the presets up
+automatically. User presets live in `~/Library/Application Support/ZQSFX/Worldizer/Presets/`
+(drop a `.wzpreset` directory there and restart the plugin). See
+[`Docs/wzpreset_format.md`](Docs/wzpreset_format.md).
 
 Convenience scripts live in [`Scripts/`](Scripts/):
 

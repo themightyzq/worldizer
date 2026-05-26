@@ -102,7 +102,16 @@ The pragmatic broadband-impulse-per-bin shortcut was tried first per the prompt,
 
 **Deviations:** (1) classes keep the established `WorldizerAudioProcessor`/`...Editor` names, not the prompt's generic `PluginProcessor`. (2) Used `juce::dsp::Gain` for input/output gain (clean multi-channel smoothing) instead of the prompt's manual rewind-skip smoother, and a pre-allocated `mixRamp` for the blend. (3) No "zero-pad IRs to fixed size" defensive step — unnecessary because `juce::dsp::Convolution` load/process are wait-free (allocation happens on its own loader thread, never the audio thread). (4) Version bumped to 0.0.2.
 
-**To revisit:** state restore re-renders the scene (~0.1 s) rather than loading a cached IR — Slice 3 adds `.wzpreset` IR caching. Scene-change crossfade quality is by-construction click-free but unverified by ear (pluginval doesn't change scenes). `getTailLengthSeconds` reports the max IR length (6 s) — conservative; could report the actual trimmed IR length later.
+**Audition feature (added after the initial Slice 2 commit):** built-in dry test
+signals — **Click** (4 transients), **Sweep** (3 s log 20 Hz–20 kHz), **Noise**
+(1 s gated burst) — generated in `prepareToPlay` and injected at the top of
+`processBlock` (RT-safe, *before* the bypass check so bypass plays the dry signal
+and A/Bs the effect rather than muting it). Triggered from three editor buttons; no
+host content needed. Loudness is matched by **active-region RMS, tuned against
+BS.1770/LUFS** (equal RMS ≠ equal loudness — a sustained sweep reads far louder than
+transient clicks; the click is transient-limited and maxed to a peak ceiling).
+
+**To revisit:** scene-change crossfade quality is by-construction click-free but unverified by ear (pluginval doesn't change scenes). `getTailLengthSeconds` reports the max IR length (6 s) — conservative; could report the actual trimmed IR length later. (Slice 3 resolves the state-restore re-render via `.wzpreset` IR loading.)
 
 ---
 
@@ -110,13 +119,29 @@ The pragmatic broadband-impulse-per-bin shortcut was tried first per the prompt,
 
 **Goal:** Scene state can be loaded from and saved to disk.
 
-- [ ] Complete `Scene.h/cpp` data model
-- [ ] `WzPresetIO.h/cpp` — read/write `.wzpreset` bundles (geometry.json + rendered.wav + metadata.json + thumbnail.png)
-- [ ] JSON schemas documented in `Docs/architecture.md`
-- [ ] Hand-author 2-3 test `.wzpreset` bundles (small room, hallway, outdoor clearing)
-- [ ] Plugin can load a `.wzpreset` from a hardcoded path and use its baked IR
+- [x] `WzPresetIO.h/cpp` — read/write `.wzpreset` bundles (geometry.json + rendered.wav + metadata.json + thumbnail.png) + `.wzpkg` pack/unpack for embedding
+- [x] JSON schemas documented (`Docs/wzpreset_format.md`; `Docs/architecture.md` §4 updated to match)
+- [x] `MaterialResolver` (name → Material), `PresetManager` (shipped + user libraries)
+- [x] `BakePresets` CLI exports the five test scenes as `.wzpreset` bundles + embedded `.wzpkg`
+- [x] Plugin loads presets from embedded data + user folder; selection swaps the baked IR with **no rendering**
+- [x] State save/restore stores the preset id and loads the baked IR (instant; Slice 2 `currentScene` migrated)
+- [x] `pluginval --strictness-level 10` passes; Universal Binary
 
-**Acceptance:** Plugin loads a preset file from disk and audibly applies it. Modifying the preset's WAV file changes the sound on next load.
+**Acceptance:** Plugin loads a preset from disk/embedded data and audibly applies it; switching presets is a file read + crossfade, not a render. **Verified programmatically:** fresh-checkout build (HAS_SHIPPED=0) → BakePresets → rebuild (HAS_SHIPPED=1) workflow; well-formed schema-valid JSON; pluginval strictness 10; Universal Binary. **Needs user/DAW:** by-ear preset switching, instant state restore feel, user-folder workflow, Soundminer smoothness.
+
+### Slice 3 retrospective
+
+**Preset format / embedding:** `.wzpreset` is a directory (geometry.json + rendered.wav + thumbnail.png + metadata.json). Shipped presets are additionally packed into one **`.wzpkg` blob per preset** (length-prefixed concatenation) for binary embedding — this avoids the binary-data **symbol collisions** the prompt's per-file embedding would hit (every bundle has a `geometry.json`, etc.). `PresetManager` enumerates embedded presets via JUCE's `namedResourceList` (no hardcoded id list) and merges in user `.wzpreset` dirs from `~/Library/Application Support/ZQSFX/Worldizer/Presets/` (user overrides shipped by id).
+
+**Render thread is now dormant:** preset selection = `PresetManager::loadPreset` (file/binary read) + `ConvolutionEngine::loadIR`. The render thread only runs as a recovery path if a preset is missing its `rendered.wav`. State restore loads the baked IR — no re-render.
+
+**Chicken-and-egg / fresh checkout:** the generated bundles are *not* committed (they're regenerable from `TestScenes` via `BakePresets`). A fresh checkout builds with `WORLDIZER_HAS_SHIPPED_PRESETS=0` (empty preset list; the embedded `default_ir.wav` still gives instant audio). Run `BakePresets`, then rebuild — `file(GLOB ... CONFIGURE_DEPENDS)` picks the new `.wzpkg` files up and flips `HAS_SHIPPED=1`. Documented in `README.md`.
+
+**Deviations:** (1) packed `.wzpkg` embedding instead of per-file (symbol collisions). (2) Kept the embedded `default_ir.wav` as the instant cold-start bootstrap + fresh-checkout fallback (layered under the preset system). (3) `BakePresets` links `juce_gui_basics` (graphics + `ScopedJuceInitialiser_GUI`) for thumbnail rendering, not just `juce_graphics`. (4) Slice 2 `getCurrentSceneName`/`setCurrentSceneName` kept as deprecated shims onto the preset API. (5) `bounds` serialized as `min`/`max` arrays (the Slice 0 architecture sketch used `x`/`y`/`z`); architecture.md updated.
+
+**To revisit:** thumbnails are name-on-dark placeholders (real geometry render in Slice 4). The editor's preset combo populates once (added user presets need a plugin reopen — live rescan is a Slice 4 polish). Subtractive brushes are parsed but not yet ray-traced. Float coordinates serialize at full precision (verbose but valid).
+
+---
 
 ---
 

@@ -2,8 +2,10 @@
 
 #include <JuceHeader.h>
 #include <array>
+#include <optional>
 #include "../DSP/ConvolutionEngine.h"
 #include "RenderThread.h"
+#include "PresetManager.h"
 #include "../Shared/Constants.h"
 
 /**
@@ -52,11 +54,17 @@ public:
     juce::AudioProcessorParameter* getBypassParameter() const override { return bypassParam; }
 
     //==============================================================================
-    // === Scene selection ===
-    juce::String getCurrentSceneName() const;
-    void setCurrentSceneName (const juce::String& sceneName);
-    static juce::StringArray getAvailableSceneNames();
+    // === Preset selection (presets are .wzpreset bundles loaded by PresetManager) ===
+    juce::String getCurrentPresetId() const;
+    void         setCurrentPresetId (const juce::String& presetId);
+    juce::StringArray getAvailablePresetIds() const;
+    juce::Array<Worldizer::WzPresetIO::Loaded> getAvailablePresetMetadata() const;
+    std::optional<Worldizer::WzPresetIO::Loaded> getCurrentPresetMetadata() const;
     bool isRendering() const noexcept;
+
+    // === Deprecated Slice 2 scene API (mapped onto presets for compatibility) ===
+    [[deprecated ("Use getCurrentPresetId")]] juce::String getCurrentSceneName() const;
+    [[deprecated ("Use setCurrentPresetId")]] void setCurrentSceneName (const juce::String& sceneName);
 
     // === Built-in audition test signals ===
     /** Triggers a built-in dry test signal to play once through the worldizing
@@ -72,10 +80,13 @@ private:
     void requestSceneRender (const juce::String& sceneName, float crossfadeMs);
     void loadEmbeddedDefaultIR();
     void updateDryDelayToMatchConvolutionLatency();
+    static juce::String sceneNameToPresetId (const juce::String& sceneName);
+    static juce::String presetIdToSceneName (const juce::String& presetId);
 
-    static constexpr const char* kDefaultScene = "smallConcreteRoom";
+    static constexpr const char* kDefaultPreset = "small_concrete_room";
 
     Worldizer::ConvolutionEngine convolution;
+    std::unique_ptr<Worldizer::PresetManager> presetManager;
     std::unique_ptr<Worldizer::RenderThread> renderThread;
 
     juce::dsp::Gain<float> inputGain, outputGain;
@@ -87,8 +98,9 @@ private:
     std::atomic<float>* mixValue        = nullptr;
     juce::AudioParameterBool* bypassParam = nullptr;
 
-    juce::CriticalSection sceneNameLock;
-    juce::String currentSceneName { kDefaultScene };
+    mutable juce::CriticalSection presetLock;
+    juce::String currentPresetId { kDefaultPreset };
+    std::optional<Worldizer::WzPresetIO::Loaded> currentPresetMetadata;
 
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> dryDelay { 8192 };
     int currentDryDelaySamples = 0;

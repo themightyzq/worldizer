@@ -4,14 +4,20 @@
 using LnF = WorldizerLookAndFeel;
 
 //==============================================================================
-juce::String WorldizerAudioProcessorEditor::displayName (const juce::String& s)
+void WorldizerAudioProcessorEditor::populatePresetCombo()
 {
-    if (s == "smallConcreteRoom") return "Small Concrete Room";
-    if (s == "hallway")           return "Hallway";
-    if (s == "forestClearing")    return "Forest Clearing";
-    if (s == "gymnasium")         return "Gymnasium";
-    if (s == "anechoic")          return "Anechoic";
-    return s;
+    presetSelector.clear (juce::dontSendNotification);
+    presetIds.clear();
+
+    const auto all = processorRef.getAvailablePresetMetadata();
+    for (int i = 0; i < all.size(); ++i)
+    {
+        presetSelector.addItem (all.getReference (i).name, i + 1);
+        presetIds.add (all.getReference (i).presetId);
+    }
+
+    const int cur = presetIds.indexOf (processorRef.getCurrentPresetId());
+    presetSelector.setSelectedId (juce::jmax (0, cur) + 1, juce::dontSendNotification);
 }
 
 //==============================================================================
@@ -20,25 +26,20 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
 {
     setLookAndFeel (&lookAndFeel);
 
-    // --- Scene selector ---
-    sceneNames = WorldizerAudioProcessor::getAvailableSceneNames();
-    for (int i = 0; i < sceneNames.size(); ++i)
-        sceneSelector.addItem (displayName (sceneNames[i]), i + 1);
-
-    const int currentIdx = sceneNames.indexOf (processorRef.getCurrentSceneName());
-    sceneSelector.setSelectedId (juce::jmax (0, currentIdx) + 1, juce::dontSendNotification);
-    sceneSelector.setTooltip ("Choose the acoustic space to convolve through.");
-    sceneSelector.onChange = [this]
+    // --- Preset selector ---
+    populatePresetCombo();
+    presetSelector.setTooltip ("Choose the acoustic space (preset) to convolve through.");
+    presetSelector.onChange = [this]
     {
-        const int id = sceneSelector.getSelectedId();
-        if (id >= 1 && id <= sceneNames.size())
-            processorRef.setCurrentSceneName (sceneNames[id - 1]);
+        const int idx = presetSelector.getSelectedId() - 1;
+        if (idx >= 0 && idx < presetIds.size())
+            processorRef.setCurrentPresetId (presetIds[idx]);
     };
-    addAndMakeVisible (sceneSelector);
+    addAndMakeVisible (presetSelector);
 
-    sceneLabel.setText ("Scene", juce::dontSendNotification);
-    sceneLabel.setJustificationType (juce::Justification::centredLeft);
-    addAndMakeVisible (sceneLabel);
+    presetLabel.setText ("Preset", juce::dontSendNotification);
+    presetLabel.setJustificationType (juce::Justification::centredLeft);
+    addAndMakeVisible (presetLabel);
 
     renderingIndicator.setText ("rendering...", juce::dontSendNotification);
     renderingIndicator.setJustificationType (juce::Justification::centredLeft);
@@ -109,10 +110,10 @@ void WorldizerAudioProcessorEditor::timerCallback()
     if (renderingIndicator.isVisible() != r)
         renderingIndicator.setVisible (r);
 
-    // Keep the combo in sync if the scene changed outside the UI (e.g. state restore).
-    const int idx = sceneNames.indexOf (processorRef.getCurrentSceneName());
-    if (idx >= 0 && sceneSelector.getSelectedId() != idx + 1)
-        sceneSelector.setSelectedId (idx + 1, juce::dontSendNotification);
+    // Keep the combo in sync if the preset changed outside the UI (e.g. state restore).
+    const int idx = presetIds.indexOf (processorRef.getCurrentPresetId());
+    if (idx >= 0 && presetSelector.getSelectedId() != idx + 1)
+        presetSelector.setSelectedId (idx + 1, juce::dontSendNotification);
 }
 
 //==============================================================================
@@ -153,11 +154,11 @@ void WorldizerAudioProcessorEditor::resized()
     auto header = area.removeFromTop (60);
     bypassButton.setBounds (header.getRight() - 90, 17, 78, 26);
 
-    auto sceneRow = area.removeFromTop (48).reduced (12, 9);
-    sceneLabel.setBounds (sceneRow.removeFromLeft (50));
-    sceneSelector.setBounds (sceneRow.removeFromLeft (240));
-    sceneRow.removeFromLeft (12);
-    renderingIndicator.setBounds (sceneRow);
+    auto presetRow = area.removeFromTop (48).reduced (12, 9);
+    presetLabel.setBounds (presetRow.removeFromLeft (50));
+    presetSelector.setBounds (presetRow.removeFromLeft (240));
+    presetRow.removeFromLeft (12);
+    renderingIndicator.setBounds (presetRow);
 
     auto auditionRow = area.removeFromTop (50).reduced (12, 9);
     auditionLabel.setBounds (auditionRow.removeFromLeft (64));

@@ -1,50 +1,93 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <optional>
 #include "../Model/Scene.h"
 
 namespace Worldizer
 {
 /**
-    Reads and writes .wzpreset bundles (see Docs/architecture.md §4):
+    Reads and writes .wzpreset bundles (see Docs/wzpreset_format.md):
 
-        preset_name.wzpreset/
-        ├── geometry.json     (brushes, materials, default source/mic positions)
-        ├── rendered.wav      (pre-baked IR)
-        ├── thumbnail.png     (top-down visualisation)
-        └── metadata.json     (name, category, description, author, ...)
+        <id>.wzpreset/
+        ├── geometry.json   (scene structure)
+        ├── rendered.wav    (baked IR)
+        ├── thumbnail.png   (top-down visualisation; placeholder for now)
+        └── metadata.json   (descriptive info)
 
-    Browse mode only reads rendered.wav + metadata.json (instant load). Edit mode
-    loads everything. Slice 3 implements the bundle I/O.
+    For Slice 3 a .wzpreset is a directory. Shipped presets are additionally packed
+    into a single .wzpkg blob (a simple length-prefixed concatenation of the four
+    files) for binary-data embedding — this gives one unique symbol per preset and
+    avoids the symbol collisions that embedding the raw files (all named
+    geometry.json, etc.) would cause.
 */
 class WzPresetIO
 {
 public:
-    struct Metadata
+    /** A loaded preset. The `ir` field is empty for metadata-only loads. */
+    struct Loaded
     {
-        juce::String name, category, description, author;
-        juce::String ambientBed, defaultSourceCharacter, defaultMicCharacter;
+        juce::String      presetId;       // bundle name without extension, e.g. "small_concrete_room"
+        juce::String      name;           // human-readable (metadata.json)
+        juce::String      category;
+        juce::String      description;
+        juce::String      author;
         juce::StringArray tags;
+        juce::String      ambientBed;             // may be empty
+        juce::String      defaultSourceCharacter; // may be empty
+        juce::String      defaultMicCharacter;    // may be empty
+
+        // Diagnostic metadata.
+        juce::String      renderedAt;
+        int               renderNumRays    = 0;
+        int               renderMaxBounces = 0;
+        int               renderSampleRate = 0;
+        int               renderSeed       = 0;
+
+        Scene                    scene;
+        juce::AudioBuffer<float>  ir;
+        double                    irSampleRate = 48000.0;
+        juce::Image               thumbnail;
+
+        /** Returns a copy with the (large) IR buffer cleared — for lightweight caches. */
+        Loaded withoutIR() const
+        {
+            Loaded copy = *this;
+            copy.ir.setSize (0, 0);
+            return copy;
+        }
     };
 
-    struct Preset
-    {
-        Scene scene;
-        Metadata metadata;
-        juce::AudioBuffer<float> renderedIR;
-        double irSampleRate = 0.0;
-    };
+    /** Read a full .wzpreset directory (geometry + IR + thumbnail + metadata). */
+    static std::optional<Loaded> readBundle (const juce::File& bundleDir, juce::String& errorOut);
 
-    /** Load a full preset bundle from disk (edit mode). */
-    static bool load (const juce::File& bundle, Preset& out);
+    /** Read just metadata.json (no IR/scene/thumbnail) — fast, for browser listing. */
+    static std::optional<Loaded> readMetadataOnly (const juce::File& bundleDir, juce::String& errorOut);
 
-    /** Fast path: read only metadata.json + rendered.wav (browse mode). */
-    static bool loadForBrowse (const juce::File& bundle,
-                               Metadata& metaOut,
-                               juce::AudioBuffer<float>& irOut,
-                               double& irSampleRateOut);
+    /** Write a .wzpreset directory (creates it; overwrites existing files). */
+    static bool writeBundle (const juce::File& bundleDir,
+                             const Scene& scene,
+                             const juce::AudioBuffer<float>& ir,
+                             double irSampleRate,
+                             const Loaded& metadata,
+                             juce::String& errorOut);
 
-    /** Write a preset bundle to disk. */
-    static bool save (const juce::File& bundle, const Preset& preset);
+    /** Find all .wzpreset directories directly in `directory`. */
+    static juce::Array<juce::File> findPresetsIn (const juce::File& directory);
+
+    /** Pack a .wzpreset directory into a single .wzpkg blob for embedding. */
+    static bool packBundle (const juce::File& bundleDir, const juce::File& outPkgFile, juce::String& errorOut);
+
+    /** Read a preset from a .wzpkg blob (the embedded shipped-library format). */
+    static std::optional<Loaded> readFromBinaryData (const void* data, size_t size, juce::String& errorOut);
+
+private:
+    static juce::var sceneToJson (const Scene& scene);
+    static Scene     sceneFromJson (const juce::var& v, juce::String& errorOut);
+    static juce::var metadataToJson (const Loaded& m);
+    static void      metadataFromJson (const juce::var& v, Loaded& outMeta);
+
+    static juce::Image makePlaceholderThumbnail (const juce::String& name);
+    static bool        writeWavFile (const juce::File& file, const juce::AudioBuffer<float>& ir, double sr, juce::String& errorOut);
 };
 } // namespace Worldizer
