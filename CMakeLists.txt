@@ -93,6 +93,7 @@ target_sources(Worldizer
         Source/DSP/AmbientBed.h
         Source/DSP/ConvolutionEngine.h
         Source/DSP/ConvolutionEngine.cpp
+        Source/DSP/DistanceModel.h
         Source/DSP/ImageSourceSolver.h
         Source/DSP/IRBuilder.h
         Source/DSP/IRBuilder.cpp
@@ -265,6 +266,47 @@ target_sources(MicMoveTest
 )
 target_compile_definitions(MicMoveTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 target_link_libraries(MicMoveTest
+    PRIVATE
+        juce::juce_audio_formats
+        juce::juce_audio_basics
+        juce::juce_core
+        juce::juce_dsp
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
+# === Slice 4.5: validates the DistanceModel curves (header-only model) ===
+juce_add_console_app(DistanceTest PRODUCT_NAME "DistanceTest")
+juce_generate_juce_header(DistanceTest)
+target_sources(DistanceTest PRIVATE Tests/distance_test.cpp)
+target_compile_definitions(DistanceTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(DistanceTest
+    PRIVATE
+        juce::juce_audio_basics
+        juce::juce_core
+        juce::juce_dsp
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
+# === Slice 4.5: IR analysis / regression tool (render + analyze) ===
+juce_add_console_app(IRInspect PRODUCT_NAME "IRInspect")
+juce_generate_juce_header(IRInspect)
+target_sources(IRInspect
+    PRIVATE
+        Tools/ir_inspect/ir_inspect.cpp
+        Source/Model/Material.cpp
+        Source/Model/Brush.cpp
+        Source/Model/SourceNode.cpp
+        Source/Model/MicNode.cpp
+        Source/Model/Scene.cpp
+        Source/Model/TestScenes.cpp
+        Source/DSP/RayTracer.cpp
+        Source/DSP/IRBuilder.cpp
+        Source/DSP/AirAbsorption.cpp
+)
+target_compile_definitions(IRInspect PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(IRInspect
     PRIVATE
         juce::juce_audio_formats
         juce::juce_audio_basics

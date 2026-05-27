@@ -7,6 +7,22 @@ using namespace Worldizer;
 
 namespace
 {
+    // Transparent output safety ceiling. Below the knee (~-1.5 dBFS) it is bit-exact
+    // (returns the input unchanged) so it never colours normal-level material; above
+    // the knee it soft-saturates and asymptotes to +-1.0, so convolution peaks / dense
+    // overlapping tails can't push the output past full scale and "overwhelm the
+    // mixer". Instantaneous waveshaping (no time-varying gain) => it CANNOT pump, and
+    // adds no latency — unlike a compressor/limiter, which is exactly what we don't want.
+    inline float softClip (float x) noexcept
+    {
+        constexpr float knee = 0.84f; // ~-1.5 dBFS
+        const float a = std::abs (x);
+        if (a <= knee)
+            return x;
+        const float s = (a - knee) / (1.0f - knee);
+        return std::copysign (knee + (1.0f - knee) * std::tanh (s), x);
+    }
+
     // Normalises a mono buffer to a target RMS measured over its ACTIVE region
     // (samples above -26 dB of the peak). This matches perceived loudness across
     // signals of different density — sparse clicks vs. a sustained sweep/noise —
@@ -147,6 +163,29 @@ void WorldizerAudioProcessor::setCurrentPresetId (const juce::String& presetId)
         currentPresetMetadata = loaded->withoutIR();
     }
 
+    // Seed the distance model from the preset's default source/mic spacing. The
+    // attenuation REFERENCE is set to this default distance, so the preset plays at
+    // unity (0 dB) as designed and dragging the mic changes level RELATIVE to that
+    // design point — rather than referencing a fixed 1 m, which left every preset
+    // (mics are metres away) attenuated by 10-25 dB and feeling too quiet.
+    {
+        const auto s = loaded->scene.getSource().getPosition();
+        const auto m = loaded->scene.getMic().getPosition();
+        const float distance = (m - s).length();
+        currentDistanceMeters.store (distance);
+
+        auto settings = distanceModel.getSettings();
+        settings.referenceDistance = juce::jmax (settings.minDistance, distance);
+        distanceModel.setSettings (settings);
+
+        const double sr = getSampleRate();
+        if (prepared.load() && sr > 0.0)
+        {
+            preDelaySmoothed.setTargetValue (distanceModel.computePreDelaySamples (distance, sr));
+            attenuationSmoothed.setTargetValue (juce::jmax (1.0e-4f, distanceModel.computeAttenuationGain (distance)));
+        }
+    }
+
     if (loaded->ir.getNumSamples() > 0)
     {
         // A preset load is a file read + convolver swap — no render thread involved.
@@ -196,13 +235,27 @@ void WorldizerAudioProcessor::setSourceAndMicPositions (Worldizer::Vec3 sourcePo
         currentPresetMetadata->scene.getSource().setPosition (sourcePos);
         currentPresetMetadata->scene.getMic().setPosition (micPos);
     }
+
+    // Distance cues live on the wet path (the IR is distance-independent). Update
+    // the pre-delay / attenuation targets; the smoothers ramp to them in processBlock.
+    const float distance = (micPos - sourcePos).length();
+    currentDistanceMeters.store (distance);
+    const double sr = getSampleRate();
+    if (prepared.load() && sr > 0.0)
+    {
+        preDelaySmoothed.setTargetValue (distanceModel.computePreDelaySamples (distance, sr));
+        attenuationSmoothed.setTargetValue (juce::jmax (1.0e-4f, distanceModel.computeAttenuationGain (distance)));
+    }
+
     renderCurrentScene (fullQuality, fullQuality ? 100.0f : 30.0f);
 }
 
 //==============================================================================
 juce::StringArray WorldizerAudioProcessor::getTestSignalNames()
 {
-    return { "Click", "Sweep", "Noise" };
+    // 0 = single Click (best for hearing one clean tail decay), 1 = Clicks (4 transients,
+    // reveals reflection density / flutter), 2 = Sweep, 3 = Noise.
+    return { "Click", "Clicks", "Sweep", "Noise" };
 }
 
 void WorldizerAudioProcessor::triggerTestSignal (int index)
@@ -216,28 +269,38 @@ void WorldizerAudioProcessor::generateTestSignals (double sampleRate)
     const int sr = (int) sampleRate;
     juce::Random rng (1234);
 
-    // 0: Click — short decaying-noise transients (reveals reflections). Beefed up
-    //    (4 of them, ~9 ms each) so they carry more perceived loudness; a single
-    //    4 ms click reads far quieter than a sustained tone of the same RMS.
+    // A single ~9 ms decaying-noise transient. Broadband and percussive — the best
+    // probe for hearing ONE clean tail decay (no overlapping tails to muddy it).
+    auto makeClick = [&] (juce::AudioBuffer<float>& b, double at)
     {
-        const int len = juce::jmax (1, (int) (1.1 * sr));
-        auto& b = testSignals[0]; b.setSize (1, len); b.clear();
+        const int start = (int) (at * sr);
+        const int n     = (int) (0.009 * sr);
         auto* d = b.getWritePointer (0);
-        auto click = [&] (double at)
-        {
-            const int start = (int) (at * sr);
-            const int n     = (int) (0.009 * sr);
-            for (int i = 0; i < n && start + i < len; ++i)
-                d[start + i] += std::exp (-(float) i / (0.0025f * (float) sr)) * (rng.nextFloat() * 2.0f - 1.0f);
-        };
-        click (0.05); click (0.33); click (0.61); click (0.89);
+        for (int i = 0; i < n && start + i < b.getNumSamples(); ++i)
+            d[start + i] += std::exp (-(float) i / (0.0025f * (float) sr)) * (rng.nextFloat() * 2.0f - 1.0f);
+    };
+
+    // 0: Click — a SINGLE transient. Short buffer; the convolver rings the tail out
+    //    afterwards on its own, so this isolates one decay.
+    {
+        const int len = juce::jmax (1, (int) (0.3 * sr));
+        auto& b = testSignals[0]; b.setSize (1, len); b.clear();
+        makeClick (b, 0.02);
     }
 
-    // 1: Sweep — 3 s exponential 20 Hz -> 20 kHz (reveals frequency response).
+    // 1: Clicks — four transients ~0.28 s apart (reveals reflection density / flutter;
+    //    in long reverbs the tails overlap, so use single Click to judge a tail).
+    {
+        const int len = juce::jmax (1, (int) (1.1 * sr));
+        auto& b = testSignals[1]; b.setSize (1, len); b.clear();
+        makeClick (b, 0.05); makeClick (b, 0.33); makeClick (b, 0.61); makeClick (b, 0.89);
+    }
+
+    // 2: Sweep — 3 s exponential 20 Hz -> 20 kHz (reveals frequency response).
     {
         const double T = 3.0, f1 = 20.0, f2 = 20000.0;
         const int len = juce::jmax (1, (int) (T * sr));
-        auto& b = testSignals[1]; b.setSize (1, len); b.clear();
+        auto& b = testSignals[2]; b.setSize (1, len); b.clear();
         auto* d = b.getWritePointer (0);
         const double w1 = 2.0 * juce::MathConstants<double>::pi * f1;
         const double L  = std::log (f2 / f1);
@@ -252,11 +315,11 @@ void WorldizerAudioProcessor::generateTestSignals (double sampleRate)
         for (int i = 0; i < fo && i < len; ++i) d[len - 1 - i] *= (float) i / (float) fo;
     }
 
-    // 2: Noise — 1.0 s broadband burst, smooth in, hard stop (exposes the tail;
+    // 3: Noise — 1.0 s broadband burst, smooth in, hard stop (exposes the tail;
     //    longer than before for more perceived presence vs the sustained sweep).
     {
         const int len = juce::jmax (1, (int) (1.0 * sr));
-        auto& b = testSignals[2]; b.setSize (1, len); b.clear();
+        auto& b = testSignals[3]; b.setSize (1, len); b.clear();
         auto* d = b.getWritePointer (0);
         for (int i = 0; i < len; ++i) d[i] = 0.4f * (rng.nextFloat() * 2.0f - 1.0f);
         const int fi = (int) (0.02 * sr);
@@ -269,9 +332,10 @@ void WorldizerAudioProcessor::generateTestSignals (double sampleRate)
     // sweep reads much louder per unit energy than transient clicks / broadband noise,
     // so the sweep comes down a touch and the others go up. The click is transient-
     // limited — maxed to the peak ceiling, which is as loud as a short click can get.
-    normalizeActiveRms (testSignals[0], 0.60f, 0.95f); // Click  -> peak-ceiling limited (~-0.4 dBFS)
-    normalizeActiveRms (testSignals[1], 0.20f, 0.95f); // Sweep  -> up ~+2.5 dB
-    normalizeActiveRms (testSignals[2], 0.29f, 0.95f); // Noise  -> up ~+2.4 dB
+    normalizeActiveRms (testSignals[0], 0.60f, 0.95f); // Click  (single) -> peak-ceiling limited
+    normalizeActiveRms (testSignals[1], 0.60f, 0.95f); // Clicks (4)      -> peak-ceiling limited
+    normalizeActiveRms (testSignals[2], 0.20f, 0.95f); // Sweep           -> up ~+2.5 dB
+    normalizeActiveRms (testSignals[3], 0.29f, 0.95f); // Noise           -> up ~+2.4 dB
 }
 
 //==============================================================================
@@ -307,9 +371,22 @@ void WorldizerAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBl
     dryDelay.setMaximumDelayInSamples (8192);
     dryDelay.reset();
 
+    // Wet-path pre-delay: enough for 1 s of time-of-flight at any sample rate.
+    const int maxPreDelaySamples = juce::jmax (1, (int) (sampleRate * distanceModel.getSettings().maxDelaySeconds) + 4);
+    wetPreDelay.setMaximumDelayInSamples (maxPreDelaySamples);
+    wetPreDelay.prepare (spec);
+    wetPreDelay.reset();
+
+    preDelaySmoothed.reset (sampleRate, 0.05);    // 50 ms ramp (avoids zipper on drag)
+    attenuationSmoothed.reset (sampleRate, 0.05);
+    const float dist0 = currentDistanceMeters.load();
+    preDelaySmoothed.setCurrentAndTargetValue (distanceModel.computePreDelaySamples (dist0, sampleRate));
+    attenuationSmoothed.setCurrentAndTargetValue (juce::jmax (1.0e-4f, distanceModel.computeAttenuationGain (dist0)));
+
     const int scratchLen = juce::jmax (samplesPerBlock, 8192);
     dryScratch.setSize (numCh, scratchLen, false, false, true);
     mixRamp.assign ((size_t) scratchLen, 0.0f);
+    attenRamp.assign ((size_t) scratchLen, 1.0f);
 
     generateTestSignals (sampleRate);
     activeTestSignal = -1;
@@ -410,6 +487,26 @@ void WorldizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     // 3. Wet path: convolution in place.
     convolution.process (block);
 
+    // 3a. Wet-only time-of-flight pre-delay (room IR carries no propagation delay).
+    //     Stepped once per block from the smoothed target; Lagrange interpolation +
+    //     the 50 ms ramp keep it click-free while the user drags source/mic.
+    wetPreDelay.setDelay (juce::jlimit (0.0f, (float) (wetPreDelay.getMaximumDelayInSamples() - 1),
+                                        preDelaySmoothed.getCurrentValue()));
+    wetPreDelay.process (juce::dsp::ProcessContextReplacing<float> (block));
+    preDelaySmoothed.skip (numSamples);
+
+    // 3b. Wet-only inverse-distance attenuation (smoothed, same ramp for all channels).
+    if ((int) attenRamp.size() < numSamples)
+        attenRamp.resize ((size_t) numSamples);
+    for (int i = 0; i < numSamples; ++i)
+        attenRamp[(size_t) i] = attenuationSmoothed.getNextValue();
+    for (int ch = 0; ch < numCh; ++ch)
+    {
+        auto* w = buffer.getWritePointer (ch);
+        for (int i = 0; i < numSamples; ++i)
+            w[i] *= attenRamp[(size_t) i];
+    }
+
     // 4. Dry path: latency-match to the convolver (usually zero -> skip).
     if (currentDryDelaySamples > 0)
     {
@@ -438,6 +535,16 @@ void WorldizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
 
     // 6. Output gain.
     outputGain.process (juce::dsp::ProcessContextReplacing<float> (block));
+
+    // 7. Transparent safety ceiling: prevents convolution peaks / dense overlapping
+    //    tails from clipping the output. Bit-exact below ~-1.5 dBFS (no colour in
+    //    normal use); soft-saturates to +-1.0 above. Stateless => never pumps.
+    for (int ch = 0; ch < numCh; ++ch)
+    {
+        auto* w = buffer.getWritePointer (ch);
+        for (int i = 0; i < numSamples; ++i)
+            w[i] = softClip (w[i]);
+    }
 }
 
 //==============================================================================

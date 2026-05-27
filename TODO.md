@@ -174,6 +174,138 @@ transient clicks; the click is transient-limited and maxed to a peak ceiling).
 
 ---
 
+## Slice 4.5: DSP Polish Pass (distance model + late-tail synthesis)
+
+**Goal:** Make distance audibly dramatic and make tails decay smoothly to silence,
+without breaking dry/wet alignment or any Slice 4 functionality. No UI changes.
+
+- [x] `DistanceModel` (header-only) — dual accurate↔musical curves for time-of-flight pre-delay and inverse-distance attenuation; default `accuracy = 0.4`; documented rationale
+- [x] `Trim::yes`/`Normalise::yes` revisited and KEPT intentionally; IR is now a distance-independent room response (direct at sample 0, reflections relative); rationale documented in `ConvolutionEngine` + `architecture.md` §8
+- [x] Statistical per-band late-tail synthesis with crossfade from ray-traced → synthesised, gated by the data cliff; 50 ms end fade to silence
+- [x] Wet path applies pre-delay (`Lagrange3rd` delay line) + attenuation, both smoothed (~50 ms); dry path matched to convolver latency only
+- [x] `IRInspect` CLI (render/analyze: peak, RMS, first-nonzero, energy distribution, per-band decay, RT60, decay envelope; `--no-tail`, `--distance`, `--accuracy`)
+- [x] `DistanceTest` confirms the curves are mathematically correct; `MicMoveTest` updated (IR changes with mic, direct at sample 0, distance model responds)
+- [x] `pluginval --strictness-level 10` passes; Universal Binary; presets re-baked
+
+**Acceptance:** Dragging the mic from near to far produces an unambiguous distance
+change; tails fade smoothly to silence. **Verified programmatically:** DistanceTest
+matches the expected curves to the sample; IRInspect confirms direct@0, −1 dBFS peak,
+smooth monotonic decay → silence on all five scenes (no cliff); the gym 2 m→20 m
+offline renders show a 30 dB / 31 ms (musical) or 20 dB / 52 ms (accurate) change;
+pluginval strictness 10; clean build. **Confirmed by ZQ in the DAW (by ear):** the
+drag-distance feel (§9.6), tail naturalness (§9.7), no pumping, Soundminer drop-in
+(§9.12) and multi-instance (§9.11) — all good after the two follow-up fix rounds below.
+
+### Slice 4.5 retrospective
+
+**Distance model.** The IR is now distance-independent (direct = unit impulse at
+sample 0, reflections shifted by −directArrivalTime, air absorption still keyed to
+absolute path length). `DistanceModel` applies time-of-flight pre-delay and 1/r
+attenuation on the **wet path only** — the dry path stays "source as emitted." Dual
+curves blend by `accuracy`: musical (0) = 0.6× delay + 1/r^1.5 level; accurate (1) =
+d/c + 1/r. **Chosen default `accuracy = 0.4`** — biased musical for SFX punch. At
+2 m→20 m this gives the gym a 30 dB drop + 31 ms delay (musical) vs 20 dB + 52 ms
+(accurate); both are unambiguous, musical leaning on level, accurate on delay. (I
+couldn't ear-test on this machine, so 0.4 is the prompt's recommended default,
+corroborated by the offline level/delay measurements; ZQ should confirm by ear and
+nudge toward 0.2 if the gym needs more, or 0.5 if small-room moves feel caricatured.)
+Added a `maxGain` (+6 dB) safety ceiling not in the prompt's struct — without it,
+sub-`referenceDistance` placements (musical curve, 0.3 m floor → +15 dB) would clip
+the wet path. It only bites below 1 m, so the tested ≥1 m curves are untouched.
+
+**Late-tail synthesis — the real defect was hit-starvation, not RT60.** The headline
+discovery (via the new `IRInspect` envelope dump): the gym's ray-traced histogram
+**cliffs to digital silence at ~1.4 s** — the 10 cm mic is hit-starved in a large
+open space, so the trace runs out of data long before the room stops ringing. My
+first cut crossfaded at 1.0× the *estimated* RT60 (~2.4 s), which landed in the
+silent cliff → the synthesiser sampled zero energy → no tail at all. Fix: detect the
+data cliff and crossfade at `min(1×RT60, just-before-cliff)`, fitting the decay slope
+over the reliable `[peak, cliff]` region (a narrow pre-crossfade window under-read the
+slope and produced a 3–4× too-slow tail). A second issue — one slow-decaying low band
+dominating the summed tail and bloating the gym to RT60 5.5 s — was fixed by clamping
+each band's synthesised slope to be no slower than the broadband aggregate.
+
+**Final scene measurements (IRInspect, 100k rays):** anechoic 0.07 s (dry, synthesis
+correctly skipped); small concrete 0.97 s / RT60 0.71 s; hallway 0.92 s / 1.09 s;
+forest 0.07 s; gymnasium 4.36 s / RT60 4.52 s. All decay smoothly and monotonically to
+silence with a clean fade (no truncation). The gym came out longer than the old
+"~2.6 s" characterisation — that figure was read off the *truncated* trace; the
+synthesised tail exposes the full LF-dominated decay (≈4.5 s), which is realistic for
+an untreated concrete/drywall sports hall but should get an ear check.
+
+**Deviations from the prompt.** (1) `accuracy`/curves exactly as specified, but the
+tail synthesis amplitude uses `decibelsToGain(startDb + slope·t)` (= √energy,
+continuous with the ray-traced √energy-density envelope), NOT the prompt's
+`decibelsToGain(dB/2)` which is `energy^0.25` and would jump the level — the `/2` in
+the prompt is a unit error. (2) Crossfade placement is cliff-gated at **1.0×** RT60,
+not the prompt's 1.5× — our scenes' RT60s fit inside the 4 s trace, so 1.5× would
+leave the sparse/cliffed tail in place instead of replacing it (the actual defect).
+(3) Per-band slope clamped to ≥ broadband; trailing-silence trim measures the floor
+relative to the *reverb* peak, not the direct (the direct spike dwarfs the tail by
+~40 dB). (4) Attenuation applied via a pre-filled ramp buffer rather than the prompt's
+`SmoothedValue` rewind/`skip(-n)` trick (cleaner; avoids negative skip on a
+multiplicative smoother). (5) `DistanceModel` is header-only (tiny, no .cpp). (6)
+`IRInspect` is a standalone tool (not folded into `RenderTestScene`). (7) IR length is
+adaptive (trim to the decay floor, capped at 6 s) rather than a fixed 6 s — our scenes
+don't need 6 s of mostly-silence, which would waste convolution CPU.
+
+**Performance.** Full gym render (50k rays + tail): trace 0.13 s + IR build 0.03 s =
+0.17 s — tail synthesis adds only a few ms. Preview (drag) renders skip synthesis.
+Runtime cost is a delay line + a smoothed multiply (negligible); pluginval strictness
+10 passes across sample rates / block sizes.
+
+**Post-launch ear-test fixes (ZQ in the DAW).** Three real issues the offline metrics
+missed: (1) **reverb too faint, "tails seem short," esp. gym** — the prompt's "direct
+= unit amplitude 1.0" inflated the direct ~20 dB over the reverb in large rooms (it
+broke cue #3, the direct-to-reverb ratio — the one cue we were told NOT to break).
+Fixed by keeping the direct's 1/distance scaling *relative to the reflections* at
+sample 0, then peak-normalising (so only the ratio survives, not absolute level). Gym
+IR RMS −44.6 → −31.2 dBFS; reverb ~17 dB more present. (2) **everything too quiet /
+falloff too aggressive** — attenuation referenced a fixed 1 m, but no preset places
+the mic at 1 m (gym default 10 m → −24.6 dB by default). Fixed by setting
+`referenceDistance` to each preset's default spacing on load: presets play at unity,
+dragging changes level relative to the design point (gym default now +24.6 dB vs the
+1 m reference). (3) **tail "pumps" / sounds unnatural, esp. gym** — the energy-envelope smoothing
+window (old 0.025·t growth, 100 ms cap) was far too narrow for hit-starved scenes:
+the gaps between sparse ray hits left the envelope bouncing ±4-6 dB, which amplitude-
+modulates the noise carrier = audible pumping. Confirmed with a 15 ms-resolution
+envelope dump (24-28 block-to-block *rises* in the first 1.6 s; a clean decay only
+falls). Fixed by widening the window growth to 0.09·t with a ~400 ms cap — the gym
+diffuse region now averages tens of hits per window, dropping the fluctuation to the
+±2 dB inherent to filtered noise (matching the synthesised tail; RT60s unchanged).
+The synthesised tail is a *statistical* reconstruction (band noise under the
+measured-decay envelope), not a traced tail — "accurate" = matches the measured
+early-decay rate extended smoothly to silence, since the gym trace cliffs at ~1.4 s.
+Re-baked; pluginval still passes.
+
+**Second follow-up round (robustness for ANY source, not just our click/presets):**
+(4) **tails cut off abruptly** — a real, long-standing bug: the final-fade region was
+positioned at `last + 1 + fadeSamples`, i.e. in the zero-PAD beyond the signal, and
+the fade formula was inverted — so the tail just stopped at the -75 dB trim floor with
+no fade. Fixed: end the buffer at the last audible sample and apply a raised-cosine
+fade-out that reaches exactly zero (verified: end now ramps 0.0003 -> 0 over ~30 ms).
+(5) **decay kink/plateau at the crossfade** — the ray-traced decay steepens approaching
+the data cliff, but the synthesised tail started at the gentler broadband rate, leaving
+a level plateau. Fixed: crossfade earlier (~0.65x the data extent, inside the clean
+region), fit the slope excluding the last 20% before the cliff, and match the synth's
+start level to the ray-traced level with the same centred window (seamless handoff).
+(6) **output safety** — added a stateless transparent soft-clip ceiling (bit-exact
+below ~-1.5 dBFS, asymptotes to +-1.0). Convolution can sum to peaks above the input,
+and dense input + a long IR builds reverberant energy; the ceiling prevents clipping
+the mixer without a compressor/limiter (which would pump — the thing we're avoiding).
+Steady-state buildup is already bounded by the convolver's `Normalise::yes`.
+(7) **single-click audition** added ("Click" = one transient, best for hearing one
+clean tail; "Clicks" = the original 4-burst). These fixes are general IR-quality /
+neutral-ceiling changes — deliberately NOT tuned to our dry sources or presets.
+
+**To revisit / flag for ear test:** the gym tail length (≈4.5 s vs old 2.6 s); the
+`accuracy = 0.4` default; whether to reduce `maxTraceTimeSeconds` (the engine over-
+traces to 4 s but the data cliffs early in big rooms — orthogonal, engine change).
+Ear-test WAVs written to `/tmp/eartest/` (gym 2 m/20 m × musical/accurate, tail
+synthesised vs truncated).
+
+---
+
 ## Slice 5: Source & Mic Character Library
 
 **Goal:** Recorded speaker IRs and mic IRs integrated.
@@ -272,8 +404,8 @@ transient clicks; the click is transient-limited and maxed to a peak ceiling).
 
 These are real gaps confirmed by ear/testing, to be addressed in future slices — not bugs in the current scope:
 
-- **Distance isn't dramatic enough.** The convolver uses `Trim::yes` (strips the propagation delay) and `Normalise::yes` (flattens absolute level), so moving source/mic changes the dry/wet ratio + reflection pattern but NOT the arrival delay or "far = quieter" cue. Since "distance is the headline cue" (`CLAUDE.md`), revisit as a focused distance-model pass (tradeoff: no-trim adds variable latency + breaks dry/wet phase alignment; no-normalize swings levels).
-- **Tail has a hard limit, doesn't decay smoothly to silence.** The ray-traced echogram is finite (`maxBounces` / `maxTraceTime`); needs the **statistical late-tail synthesis** deferred from Slice 1 to continue the decay exponentially to true silence.
+- ✅ **RESOLVED in Slice 4.5 — Distance isn't dramatic enough.** The IR is now a distance-independent room response (direct at sample 0); `DistanceModel` applies time-of-flight pre-delay + inverse-distance attenuation on the wet path (dual accurate↔musical curves). `Trim::yes`/`Normalise::yes` kept (latency ~0, level consistent) — the distance cues are no longer baked into / discarded by the IR. 2 m→20 m now gives 20–30 dB + 31–52 ms of change.
+- ✅ **RESOLVED in Slice 4.5 — Tail has a hard limit.** Statistical per-band late-tail synthesis continues the measured decay past the ray-traced echogram (which cliffs early in hit-starved scenes) and a 50 ms end fade guarantees clean silence. All five test scenes now decay smoothly to silence.
 - **No panning / stereo image.** The IR is mono, applied identically to L/R, so source/mic geometry produces no stereo. Needs a **stereo / multi-mic IR** (two capsules → inter-channel time/level differences). Currently a v1.0 theme; high-value, consider pulling forward (it also carries the distance/delay cues).
 - **Out-of-bounds source/mic is crude.** Drag is soft-clamped to ~1 m past the scene bounds; beyond a wall the direct just occludes. Want a more elegant solution: either disallow placing source/mic outside the main area entirely, or render the through-wall case accurately (transmission/occlusion).
 

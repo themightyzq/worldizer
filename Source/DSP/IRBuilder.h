@@ -15,11 +15,26 @@ namespace Worldizer
     RMS, then amplitude-modulated by sqrt(energy density). Summing the bands gives
     a dense, spectrally-shaped decay where HF dies away faster than LF (each band
     carries its own decay), instead of a flat broadband noise burst. Air absorption
-    is folded into each band's energy. The direct sound is added as a clean impulse
-    (amplitude 1/distance). Output is peak-normalised to -1 dBFS.
+    is folded into each band's energy.
 
-    Early reflections are currently part of the diffuse envelope; discrete early
-    reflections (image-source method) are the next refinement.
+    Slice 4.5 — the IR is a *timing- and level-normalised room response*:
+      - The direct sound is an impulse at sample 0; its amplitude keeps the 1/distance
+        scaling RELATIVE to the reflections, so the direct-to-reverberant ratio (cue
+        #3, distance-dependent) is preserved. Peak-normalisation afterwards removes the
+        absolute level (DistanceModel re-applies it), leaving only that ratio.
+      - Reflection times are stored relative to the direct (arrival - directArrival),
+        so propagation delay is out of the IR (DistanceModel re-applies it as pre-delay).
+        (Air absorption still uses absolute path lengths — farther paths stay darker.)
+      - A statistical late tail is synthesised beyond the ray-traced echogram: each
+        band's measured decay rate is continued as exponentially-decaying band noise,
+        crossfaded in over the sparse late portion so the tail decays smoothly to
+        silence instead of truncating at the trace limit.
+    Distance cues (time-of-flight pre-delay, inverse-distance level) are applied on
+    the wet path at runtime by DistanceModel, NOT baked into the IR.
+
+    Output is peak-normalised to -1 dBFS. Early reflections are currently part of
+    the diffuse envelope; discrete early reflections (image-source method) are the
+    next refinement.
 */
 class IRBuilder
 {
@@ -34,6 +49,12 @@ public:
         bool  includeDirect = true;
         float directGainCompensation = 1.0f;
         float envelopeMs = 6.0f; // energy-envelope smoothing window (diffuse-field time resolution)
+
+        // === Statistical late-tail synthesis (Slice 4.5) ===
+        bool  synthesizeLateTail = true;  // false => IR ends at the ray-traced echogram (raw trace)
+        float tailExtensionSeconds = 4.0f; // max synthesised extension beyond the trace cutoff
+        float crossfadeSeconds = 0.2f;     // ray-traced -> synthesised crossfade window
+        float finalFadeSeconds = 0.05f;    // last-N-ms linear fade guaranteeing clean silence
     };
 
     IRBuilder() = default;

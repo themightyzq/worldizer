@@ -66,6 +66,10 @@ void RenderThread::run()
         IRBuilder builder;
         IRBuilder::Settings irSettings;
         irSettings.sampleRate = 48000;
+        // Statistical late-tail synthesis only on the full (drag-release) render —
+        // it keeps the preview render fast and snappy during a drag. The full IR that
+        // replaces it on release carries the smooth, fade-to-silence tail.
+        irSettings.synthesizeLateTail = (job->quality == Job::Quality::Full);
         const auto ir = builder.build (result, irSettings);
 
         // Don't clobber the idle convolver mid-crossfade.

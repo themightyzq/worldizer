@@ -4,6 +4,7 @@
 #include <array>
 #include <optional>
 #include "../DSP/ConvolutionEngine.h"
+#include "../DSP/DistanceModel.h"
 #include "RenderThread.h"
 #include "PresetManager.h"
 #include "../Shared/Constants.h"
@@ -116,12 +117,22 @@ private:
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> dryDelay { 8192 };
     int currentDryDelaySamples = 0;
 
+    // === Distance model (Slice 4.5) — wet-path only ===
+    // The room IR is distance-independent; these add the time-of-flight pre-delay
+    // and the inverse-distance level to the WET signal, driven by source/mic spacing.
+    Worldizer::DistanceModel distanceModel;
+    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Lagrange3rd> wetPreDelay { 1 << 16 };
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>         preDelaySmoothed;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> attenuationSmoothed;
+    std::atomic<float> currentDistanceMeters { 1.0f };
+
     juce::AudioBuffer<float> dryScratch;
     std::vector<float>       mixRamp;
+    std::vector<float>       attenRamp;
 
     // Built-in audition test signals (generated in prepareToPlay).
     void generateTestSignals (double sampleRate);
-    static constexpr int kNumTestSignals = 3;
+    static constexpr int kNumTestSignals = 4;
     std::array<juce::AudioBuffer<float>, (size_t) kNumTestSignals> testSignals;
     std::atomic<int> testSignalRequested { -1 };
     int activeTestSignal = -1;  // audio-thread only

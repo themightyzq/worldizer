@@ -73,9 +73,10 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
         b.onClick = [this, index] { processorRef.triggerTestSignal (index); };
         addAndMakeVisible (b);
     };
-    setupAudition (clickButton, 0, "click");
-    setupAudition (sweepButton, 1, "sweep");
-    setupAudition (noiseButton, 2, "noise");
+    setupAudition (clickButton,  0, "single click (best for hearing one tail decay)");
+    setupAudition (clicksButton, 1, "4-click burst");
+    setupAudition (sweepButton,  2, "sweep");
+    setupAudition (noiseButton,  3, "noise");
 
     // --- Rendering indicator ---
     renderingIndicator.setText ("rendering...", juce::dontSendNotification);
@@ -206,10 +207,11 @@ void WorldizerAudioProcessorEditor::resized()
         placeKnob (outputGainSlider, outputGainLabel, knobArea);
 
         auto ab = auditionArea.withSizeKeepingCentre (auditionArea.getWidth() - 12, 32);
-        const int bw = (ab.getWidth() - 16) / 3;
-        clickButton.setBounds (ab.removeFromLeft (bw)); ab.removeFromLeft (8);
-        sweepButton.setBounds (ab.removeFromLeft (bw)); ab.removeFromLeft (8);
-        noiseButton.setBounds (ab.removeFromLeft (bw));
+        const int bw = (ab.getWidth() - 18) / 4; // four buttons, 6 px gaps
+        clickButton.setBounds  (ab.removeFromLeft (bw)); ab.removeFromLeft (6);
+        clicksButton.setBounds (ab.removeFromLeft (bw)); ab.removeFromLeft (6);
+        sweepButton.setBounds  (ab.removeFromLeft (bw)); ab.removeFromLeft (6);
+        noiseButton.setBounds  (ab.removeFromLeft (bw));
 
         renderingIndicator.setBounds (indicatorArea);
     }

@@ -41,7 +41,7 @@ private:
     // Control row
     juce::Slider inputGainSlider, mixSlider, outputGainSlider;
     juce::Label  inputGainLabel, mixLabel, outputGainLabel;
-    juce::TextButton clickButton { "Click" }, sweepButton { "Sweep" }, noiseButton { "Noise" };
+    juce::TextButton clickButton { "Click" }, clicksButton { "Clicks" }, sweepButton { "Sweep" }, noiseButton { "Noise" };
     juce::Label  renderingIndicator;
 
     // Footer
