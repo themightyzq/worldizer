@@ -65,8 +65,8 @@ PresetBrowser::PresetBrowser (PresetManager& mgr) : presetManager (mgr)
     listViewport.setScrollBarsShown (true, false);
     addAndMakeVisible (listViewport);
 
-    saveAsButton.setEnabled (false);
-    saveAsButton.setTooltip ("Save the current geometry as a new preset (available in edit mode — coming in a future update).");
+    saveAsButton.setTooltip ("Save the current scene as a new preset in the user library.");
+    saveAsButton.onClick = [this] { if (onSaveAsRequested) onSaveAsRequested(); };
     addAndMakeVisible (saveAsButton);
 
     rebuildList();

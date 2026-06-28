@@ -2,13 +2,24 @@ name: Build
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
+  workflow_dispatch:
 
 jobs:
-  build-macos:
-    name: Build (macOS Universal)
-    runs-on: macos-latest
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: macOS (Universal)
+          - os: ubuntu-latest
+            name: Linux
+          - os: windows-latest
+            name: Windows
 
     steps:
       - name: Checkout (with submodules)
@@ -16,22 +27,42 @@ jobs:
         with:
           submodules: recursive
 
+      # JUCE's gui/opengl/audio modules need a pile of system dev packages on Linux.
+      # webkit + curl are intentionally omitted (JUCE_WEB_BROWSER=0, JUCE_USE_CURL=0).
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libfontconfig1-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev \
+            libglu1-mesa-dev mesa-common-dev
+          # FreeType package was renamed across Ubuntu releases; accept either name.
+          sudo apt-get install -y libfreetype-dev || sudo apt-get install -y libfreetype6-dev
+
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        run: cmake --build build --config Release
+        run: cmake --build build --config Release --parallel
 
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      # macOS-only: confirm the plugin binary fuses arm64 + x86_64 (Soundminer req).
       - name: Verify Universal Binary
+        if: runner.os == 'macOS'
         run: ./Scripts/verify_universal_binary.sh
 
       - name: Upload VST3 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Worldizer-VST3
+          name: Worldizer-VST3-${{ runner.os }}
           path: build/Worldizer_artefacts/Release/VST3/Worldizer.vst3
           if-no-files-found: error
 
-# Note: pluginval is intentionally not run in CI yet — it needs a GUI environment
-# that headless runners don't provide without extra setup. Run it locally:
+# Note: pluginval is intentionally not run in CI (it needs a GUI environment that
+# headless runners don't provide without extra setup). Run it locally:
 #   pluginval --strictness-level 10 --validate <path-to>/Worldizer.vst3

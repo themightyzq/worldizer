@@ -1,6 +1,9 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include "WorldizerBinaryData.h"
+#include "../DSP/RayTracer.h"
+#include "../DSP/IRBuilder.h"
+#include "../UI/RoomView2D.h"
 #include <cmath>
 
 using namespace Worldizer;
@@ -59,6 +62,35 @@ namespace
             gain = peakCeiling / peak;
 
         b.applyGain (gain);
+    }
+
+    // True if two scenes differ in any ray-traced interactive property (source pos /
+    // orientation / pattern, or mic-array config / pattern / angle / per-mic pos /
+    // orientation). Used on state restore to decide whether the baked IR is still
+    // valid (skip render) or the scene was edited (re-render).
+    bool interactiveStateDiffers (const Worldizer::Scene& a, const Worldizer::Scene& b)
+    {
+        auto vecClose = [] (Worldizer::Vec3 u, Worldizer::Vec3 v) { return (u - v).length() < 1.0e-3f; };
+
+        const auto& sa = a.getSource();
+        const auto& sb = b.getSource();
+        if (! vecClose (sa.getPosition(), sb.getPosition())) return true;
+        if (! vecClose (sa.getOrientation(), sb.getOrientation())) return true;
+        if (sa.getPattern() != sb.getPattern()) return true;
+
+        const auto& aa = a.getMicArray();
+        const auto& ab = b.getMicArray();
+        if (aa.getConfiguration() != ab.getConfiguration()) return true;
+        if (aa.getPattern() != ab.getPattern()) return true;
+        if (aa.getNumMics() != ab.getNumMics()) return true;
+        if (std::abs (aa.getXYAngleDegrees() - ab.getXYAngleDegrees()) > 0.1f) return true;
+
+        for (int m = 0; m < aa.getNumMics(); ++m)
+        {
+            if (! vecClose (aa.getMic (m).getPosition(),    ab.getMic (m).getPosition()))    return true;
+            if (! vecClose (aa.getMic (m).getOrientation(), ab.getMic (m).getOrientation())) return true;
+        }
+        return false;
     }
 }
 
@@ -162,6 +194,8 @@ void WorldizerAudioProcessor::setCurrentPresetId (const juce::String& presetId)
         currentPresetId = presetId;
         currentPresetMetadata = loaded->withoutIR();
     }
+    // Fresh preset load => no uncommitted edits relative to its on-disk defaults.
+    dirtyFlag.store (false);
 
     // Seed the distance model from the preset's default source/mic spacing. The
     // attenuation REFERENCE is set to this default distance, so the preset plays at
@@ -170,20 +204,14 @@ void WorldizerAudioProcessor::setCurrentPresetId (const juce::String& presetId)
     // (mics are metres away) attenuated by 10-25 dB and feeling too quiet.
     {
         const auto s = loaded->scene.getSource().getPosition();
-        const auto m = loaded->scene.getMic().getPosition();
+        const auto m = loaded->scene.getMicArray().getCenterPosition();
         const float distance = (m - s).length();
-        currentDistanceMeters.store (distance);
 
         auto settings = distanceModel.getSettings();
         settings.referenceDistance = juce::jmax (settings.minDistance, distance);
         distanceModel.setSettings (settings);
 
-        const double sr = getSampleRate();
-        if (prepared.load() && sr > 0.0)
-        {
-            preDelaySmoothed.setTargetValue (distanceModel.computePreDelaySamples (distance, sr));
-            attenuationSmoothed.setTargetValue (juce::jmax (1.0e-4f, distanceModel.computeAttenuationGain (distance)));
-        }
+        updateDistanceFromSpacing (distance);
     }
 
     if (loaded->ir.getNumSamples() > 0)
@@ -225,20 +253,10 @@ void WorldizerAudioProcessor::renderCurrentScene (bool fullQuality, float crossf
     renderThread->requestRender (job);
 }
 
-void WorldizerAudioProcessor::setSourceAndMicPositions (Worldizer::Vec3 sourcePos,
-                                                        Worldizer::Vec3 micPos, bool fullQuality)
+void WorldizerAudioProcessor::updateDistanceFromSpacing (float distance)
 {
-    {
-        const juce::ScopedLock sl (presetLock);
-        if (! currentPresetMetadata.has_value())
-            return;
-        currentPresetMetadata->scene.getSource().setPosition (sourcePos);
-        currentPresetMetadata->scene.getMic().setPosition (micPos);
-    }
-
-    // Distance cues live on the wet path (the IR is distance-independent). Update
-    // the pre-delay / attenuation targets; the smoothers ramp to them in processBlock.
-    const float distance = (micPos - sourcePos).length();
+    // Distance cues live on the wet path (the IR is distance-independent). Update the
+    // pre-delay / attenuation targets; the smoothers ramp to them in processBlock.
     currentDistanceMeters.store (distance);
     const double sr = getSampleRate();
     if (prepared.load() && sr > 0.0)
@@ -246,9 +264,257 @@ void WorldizerAudioProcessor::setSourceAndMicPositions (Worldizer::Vec3 sourcePo
         preDelaySmoothed.setTargetValue (distanceModel.computePreDelaySamples (distance, sr));
         attenuationSmoothed.setTargetValue (juce::jmax (1.0e-4f, distanceModel.computeAttenuationGain (distance)));
     }
-
-    renderCurrentScene (fullQuality, fullQuality ? 100.0f : 30.0f);
 }
+
+void WorldizerAudioProcessor::mutateSceneAndRender (const std::function<void (Worldizer::Scene&)>& edit,
+                                                    bool fullQuality, float crossfadeMs)
+{
+    Worldizer::Vec3 src, center;
+    {
+        const juce::ScopedLock sl (presetLock);
+        if (! currentPresetMetadata.has_value())
+            return;
+        edit (currentPresetMetadata->scene);
+        src    = currentPresetMetadata->scene.getSource().getPosition();
+        center = currentPresetMetadata->scene.getMicArray().getCenterPosition();
+    }
+
+    // Distance model follows the mic-array CENTRE (single mic: the mic; XY: the array;
+    // spaced pair: the midpoint). Inter-channel time/level differences are in the IR.
+    updateDistanceFromSpacing ((center - src).length());
+    renderCurrentScene (fullQuality, crossfadeMs);
+}
+
+Worldizer::Scene WorldizerAudioProcessor::getCurrentScene() const
+{
+    const juce::ScopedLock sl (presetLock);
+    return currentPresetMetadata.has_value() ? currentPresetMetadata->scene : Worldizer::Scene {};
+}
+
+//==============================================================================
+bool WorldizerAudioProcessor::saveCurrentSceneAsPreset (const juce::String& presetName,
+                                                        const juce::String& category,
+                                                        const juce::String& description,
+                                                        const juce::StringArray& tags,
+                                                        bool overwriteExisting,
+                                                        juce::String& errorOut)
+{
+    if (presetManager == nullptr)            { errorOut = "no preset manager"; return false; }
+    if (presetName.trim().isEmpty())         { errorOut = "preset name is empty"; return false; }
+
+    // Generate a filesystem-safe id from the display name (alnum + underscores).
+    juce::String id;
+    for (auto c : presetName.toLowerCase())
+        id += (juce::CharacterFunctions::isLetterOrDigit (c) ? c : '_');
+    id = id.removeCharacters ("/\\:*?\"<>|");
+    while (id.contains ("__")) id = id.replace ("__", "_");
+    id = id.trimCharactersAtStart ("_").trimCharactersAtEnd ("_");
+    if (id.isEmpty()) id = "untitled";
+
+    const auto folder    = Worldizer::PresetManager::getUserPresetsFolder();
+    const auto bundleDir = folder.getChildFile (id + ".wzpreset");
+    if (bundleDir.exists() && ! overwriteExisting) { errorOut = "preset already exists"; return false; }
+    if (bundleDir.exists())
+        bundleDir.deleteRecursively();
+
+    // Snapshot the live scene under lock.
+    Worldizer::Scene snapshot;
+    {
+        const juce::ScopedLock sl (presetLock);
+        if (! currentPresetMetadata.has_value()) { errorOut = "no current scene"; return false; }
+        snapshot = currentPresetMetadata->scene;
+    }
+
+    // Synchronous full-quality render (~0.2 s typical) on the message thread.
+    Worldizer::RayTracer tracer;
+    Worldizer::RayTracer::Settings rt;
+    rt.numRays = 50000; rt.maxBounces = 32; rt.randomSeed = 42;
+    const auto traceResult = tracer.trace (snapshot, rt, 48000);
+
+    Worldizer::IRBuilder builder;
+    Worldizer::IRBuilder::Settings irs; irs.sampleRate = 48000;
+    const auto ir = builder.build (traceResult, irs);
+
+    // Metadata for the bundle.
+    Worldizer::WzPresetIO::Loaded meta;
+    meta.presetId    = id;
+    meta.name        = presetName;
+    meta.category    = category.isNotEmpty() ? category : juce::String ("Indoor");
+    meta.description = description;
+    meta.author      = "User";
+    meta.tags        = tags;
+    meta.renderNumRays    = rt.numRays;
+    meta.renderMaxBounces = rt.maxBounces;
+    meta.renderSampleRate = 48000;
+    meta.renderSeed       = rt.randomSeed;
+    meta.renderedAt       = juce::Time::getCurrentTime().toISO8601 (true);
+    meta.thumbnail        = Worldizer::renderSceneThumbnail (snapshot, 128, 128);
+
+    juce::String wErr;
+    if (! Worldizer::WzPresetIO::writeBundle (bundleDir, snapshot, ir, 48000.0, meta, wErr))
+    {
+        errorOut = "write failed: " + wErr;
+        return false;
+    }
+
+    // Rescan + swap to the newly saved preset (loads its baked IR; clears dirty).
+    presetManager->rescan();
+    setCurrentPresetId (id);
+    clearDirtyFlag();
+    return true;
+}
+
+// --- Whole-scene edit (RoomView2D spatial drags + sector edits) ---
+void WorldizerAudioProcessor::applyEditedScene (const Worldizer::Scene& scene, bool fullQuality)
+{
+    mutateSceneAndRender ([&scene] (Worldizer::Scene& s)
+    {
+        s.getSource()         = scene.getSource();
+        s.getMicArray()       = scene.getMicArray();
+        s.getSectorGeometry() = scene.getSectorGeometry();
+    }, fullQuality, fullQuality ? 100.0f : 30.0f);
+}
+
+// --- Source ---
+void WorldizerAudioProcessor::setSourcePosition (Worldizer::Vec3 pos, bool fullQuality)
+{
+    mutateSceneAndRender ([pos] (Worldizer::Scene& s) { s.getSource().setPosition (pos); },
+                          fullQuality, fullQuality ? 100.0f : 30.0f);
+}
+
+void WorldizerAudioProcessor::setSourcePattern (Worldizer::SourcePattern pattern)
+{
+    mutateSceneAndRender ([pattern] (Worldizer::Scene& s) { s.getSource().setPattern (pattern); }, true, 100.0f);
+}
+
+Worldizer::SourcePattern WorldizerAudioProcessor::getSourcePattern() const
+{
+    const juce::ScopedLock sl (presetLock);
+    return currentPresetMetadata.has_value() ? currentPresetMetadata->scene.getSource().getPattern()
+                                             : Worldizer::SourcePattern::Omnidirectional;
+}
+
+void WorldizerAudioProcessor::setSourceOrientation (Worldizer::Vec3 dir)
+{
+    mutateSceneAndRender ([dir] (Worldizer::Scene& s) { s.getSource().setOrientation (dir); }, true, 100.0f);
+}
+
+Worldizer::Vec3 WorldizerAudioProcessor::getSourceOrientation() const
+{
+    const juce::ScopedLock sl (presetLock);
+    return currentPresetMetadata.has_value() ? currentPresetMetadata->scene.getSource().getOrientation()
+                                             : Worldizer::Vec3 { 1.0f, 0.0f, 0.0f };
+}
+
+// --- Mic array configuration / pattern (discrete => full render) ---
+void WorldizerAudioProcessor::setMicConfiguration (Worldizer::MicArray::Configuration config)
+{
+    mutateSceneAndRender ([config] (Worldizer::Scene& s) { s.getMicArray().setConfiguration (config); }, true, 100.0f);
+}
+
+Worldizer::MicArray::Configuration WorldizerAudioProcessor::getMicConfiguration() const
+{
+    const juce::ScopedLock sl (presetLock);
+    return currentPresetMetadata.has_value() ? currentPresetMetadata->scene.getMicArray().getConfiguration()
+                                             : Worldizer::MicArray::Configuration::Single;
+}
+
+void WorldizerAudioProcessor::setMicPattern (Worldizer::MicPattern pattern)
+{
+    mutateSceneAndRender ([pattern] (Worldizer::Scene& s) { s.getMicArray().setAllPatterns (pattern); }, true, 100.0f);
+}
+
+Worldizer::MicPattern WorldizerAudioProcessor::getMicPattern() const
+{
+    const juce::ScopedLock sl (presetLock);
+    return currentPresetMetadata.has_value() ? currentPresetMetadata->scene.getMicArray().getPattern()
+                                             : Worldizer::MicPattern::Omnidirectional;
+}
+
+void WorldizerAudioProcessor::setXYAngleDegrees (float deg, bool fullQuality)
+{
+    mutateSceneAndRender ([deg] (Worldizer::Scene& s) { s.getMicArray().setXYAngleDegrees (deg); },
+                          fullQuality, fullQuality ? 100.0f : 30.0f);
+}
+
+float WorldizerAudioProcessor::getXYAngleDegrees() const
+{
+    const juce::ScopedLock sl (presetLock);
+    return currentPresetMetadata.has_value() ? currentPresetMetadata->scene.getMicArray().getXYAngleDegrees() : 90.0f;
+}
+
+// --- Per-mic position / orientation ---
+void WorldizerAudioProcessor::setMicPositionImmediate (int micIndex, Worldizer::Vec3 pos, bool fullQuality)
+{
+    mutateSceneAndRender ([micIndex, pos] (Worldizer::Scene& s)
+    {
+        auto& arr = s.getMicArray();
+        // XY capsules are coincident by definition — reject individual moves (§15).
+        if (arr.getConfiguration() == Worldizer::MicArray::Configuration::StereoXY)
+            return;
+        if (micIndex >= 0 && micIndex < arr.getNumMics())
+            arr.getMic (micIndex).setPosition (pos);
+    }, fullQuality, fullQuality ? 100.0f : 30.0f);
+}
+
+Worldizer::Vec3 WorldizerAudioProcessor::getMicPosition (int micIndex) const
+{
+    const juce::ScopedLock sl (presetLock);
+    if (currentPresetMetadata.has_value())
+    {
+        const auto& arr = currentPresetMetadata->scene.getMicArray();
+        if (micIndex >= 0 && micIndex < arr.getNumMics())
+            return arr.getMic (micIndex).getPosition();
+    }
+    return {};
+}
+
+void WorldizerAudioProcessor::setXYArrayPosition (Worldizer::Vec3 pos, bool fullQuality)
+{
+    mutateSceneAndRender ([pos] (Worldizer::Scene& s) { s.getMicArray().setXYPosition (pos); },
+                          fullQuality, fullQuality ? 100.0f : 30.0f);
+}
+
+void WorldizerAudioProcessor::setMicOrientation (int micIndex, Worldizer::Vec3 dir, bool fullQuality)
+{
+    mutateSceneAndRender ([micIndex, dir] (Worldizer::Scene& s)
+    {
+        auto& arr = s.getMicArray();
+        if (micIndex >= 0 && micIndex < arr.getNumMics())
+            arr.getMic (micIndex).setOrientation (dir);
+    }, fullQuality, fullQuality ? 100.0f : 30.0f);
+}
+
+Worldizer::Vec3 WorldizerAudioProcessor::getMicOrientation (int micIndex) const
+{
+    const juce::ScopedLock sl (presetLock);
+    if (currentPresetMetadata.has_value())
+    {
+        const auto& arr = currentPresetMetadata->scene.getMicArray();
+        if (micIndex >= 0 && micIndex < arr.getNumMics())
+            return arr.getMic (micIndex).getOrientation();
+    }
+    return { -1.0f, 0.0f, 0.0f };
+}
+
+void WorldizerAudioProcessor::setXYOrientation (Worldizer::Vec3 dir, bool fullQuality)
+{
+    mutateSceneAndRender ([dir] (Worldizer::Scene& s) { s.getMicArray().setXYOrientation (dir); },
+                          fullQuality, fullQuality ? 100.0f : 30.0f);
+}
+
+// Deprecated Slice 4 single-mic helper.
+JUCE_BEGIN_IGNORE_DEPRECATION_WARNINGS
+void WorldizerAudioProcessor::setSourceAndMicPositions (Worldizer::Vec3 sourcePos,
+                                                        Worldizer::Vec3 micPos, bool fullQuality)
+{
+    mutateSceneAndRender ([sourcePos, micPos] (Worldizer::Scene& s)
+    {
+        s.getSource().setPosition (sourcePos);
+        s.getMic().setPosition (micPos); // primary mic
+    }, fullQuality, fullQuality ? 100.0f : 30.0f);
+}
+JUCE_END_IGNORE_DEPRECATION_WARNINGS
 
 //==============================================================================
 juce::StringArray WorldizerAudioProcessor::getTestSignalNames()
@@ -441,6 +707,13 @@ void WorldizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     for (int ch = getTotalNumInputChannels(); ch < getTotalNumOutputChannels(); ++ch)
         buffer.clear (ch, 0, numSamples);
 
+    // Safety: grow the dry-capture scratch if a host ever hands us a block larger than
+    // the size prepareToPlay was told to expect. Per the JUCE contract this never fires,
+    // but mixRamp/attenRamp guard the same way below — keep dryScratch consistent so an
+    // oversized block can't overflow it (avoidReallocating: no-op once large enough).
+    if (dryScratch.getNumSamples() < numSamples)
+        dryScratch.setSize (numCh, numSamples, false, false, true);
+
     // Built-in audition: inject the generated test signal (replacing the input)
     // BEFORE the bypass check, so bypass plays the dry signal instead of muting it.
     const int req = testSignalRequested.exchange (-1);
@@ -574,13 +847,48 @@ void WorldizerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
         state.setProperty ("currentPreset", currentPresetId, nullptr);
         if (currentPresetMetadata.has_value())
         {
-            const auto s = currentPresetMetadata->scene.getSource().getPosition();
-            const auto m = currentPresetMetadata->scene.getMic().getPosition();
-            state.setProperty ("sourceX", s.x, nullptr); state.setProperty ("sourceY", s.y, nullptr); state.setProperty ("sourceZ", s.z, nullptr);
-            state.setProperty ("micX",    m.x, nullptr); state.setProperty ("micY",    m.y, nullptr); state.setProperty ("micZ",    m.z, nullptr);
+            const auto& scene = currentPresetMetadata->scene;
+            const auto& src   = scene.getSource();
+            const auto& arr   = scene.getMicArray();
+
+            auto setVec = [&] (const char* px, const char* py, const char* pz, Worldizer::Vec3 v)
+            {
+                state.setProperty (px, v.x, nullptr);
+                state.setProperty (py, v.y, nullptr);
+                state.setProperty (pz, v.z, nullptr);
+            };
+
+            // Source.
+            setVec ("sourceX", "sourceY", "sourceZ", src.getPosition());
+            setVec ("sourceOX", "sourceOY", "sourceOZ", src.getOrientation());
+            state.setProperty ("sourcePattern", (int) src.getPattern(), nullptr);
+
+            // Mic array.
+            state.setProperty ("micConfig",  (int) arr.getConfiguration(), nullptr);
+            state.setProperty ("micPattern", (int) arr.getPattern(), nullptr);
+            state.setProperty ("xyAngle",    arr.getXYAngleDegrees(), nullptr);
+            setVec ("xyFacingX", "xyFacingY", "xyFacingZ", arr.getXYOrientation());
+            setVec ("mic0X", "mic0Y", "mic0Z", arr.getMic (0).getPosition());
+            setVec ("mic0OX", "mic0OY", "mic0OZ", arr.getMic (0).getOrientation());
+            // mic1 is only meaningful for 2-mic configs, but always store it (the
+            // .getMic(1) accessor reads the always-allocated slot) so a round-trip
+            // through Single->Spaced->Single is lossless within a session.
+            const auto& mic1 = arr.getNumMics() > 1 ? arr.getMic (1) : arr.getPrimary();
+            setVec ("mic1X", "mic1Y", "mic1Z", mic1.getPosition());
+            setVec ("mic1OX", "mic1OY", "mic1OZ", mic1.getOrientation());
+
+            // Legacy mirror (so a Slice 4 build could still read the primary mic).
+            setVec ("micX", "micY", "micZ", arr.getPrimary().getPosition());
+
+            // Sector geometry (Slice 6a): persist the user-edited sectors as JSON so
+            // re-opening the session restores them. Empty for legacy / Test presets.
+            if (! scene.getSectorGeometry().isEmpty())
+                state.setProperty ("sectorGeometry",
+                                   juce::JSON::toString (scene.getSectorGeometry().toJson(), true), nullptr);
         }
     }
     state.setProperty ("sidebarCollapsed", sidebarCollapsed.load(), nullptr);
+    state.setProperty ("dirty",             dirtyFlag.load(),       nullptr);
 
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
@@ -606,30 +914,83 @@ void WorldizerAudioProcessor::setStateInformation (const void* data, int sizeInB
 
             if (presetId.isNotEmpty())
             {
-                setCurrentPresetId (presetId);  // loads the baked IR at default positions
+                setCurrentPresetId (presetId);  // loads the baked IR at default geometry
 
-                // Restored source/mic positions: only re-render if they differ from
-                // the preset defaults (otherwise the baked IR is correct — stay instant).
-                if (state.hasProperty ("sourceX"))
+                // Reconstruct the saved source + mic array onto the (default) live
+                // scene, then only re-render if it differs from the preset default
+                // (otherwise the baked IR is correct — stay instant).
+                auto getVec = [&] (const char* px, const char* py, const char* pz, Worldizer::Vec3 fallback)
                 {
-                    const Worldizer::Vec3 src ((float) state["sourceX"], (float) state["sourceY"], (float) state["sourceZ"]);
-                    const Worldizer::Vec3 mic ((float) state["micX"],    (float) state["micY"],    (float) state["micZ"]);
+                    return state.hasProperty (px)
+                        ? Worldizer::Vec3 { (float) state[px], (float) state[py], (float) state[pz] }
+                        : fallback;
+                };
 
-                    bool differs = true;
+                const Worldizer::Scene defaultScene = getCurrentScene();
+                Worldizer::Scene edited = defaultScene;
+
+                if (state.hasProperty ("micConfig"))
+                {
+                    // === Slice 5 format ===
+                    auto& src = edited.getSource();
+                    src.setPosition    (getVec ("sourceX",  "sourceY",  "sourceZ",  src.getPosition()));
+                    src.setOrientation (getVec ("sourceOX", "sourceOY", "sourceOZ", src.getOrientation()));
+                    if (state.hasProperty ("sourcePattern"))
+                        src.setPattern ((Worldizer::SourcePattern) (int) state["sourcePattern"]);
+
+                    auto& arr = edited.getMicArray();
+                    arr.setConfiguration ((Worldizer::MicArray::Configuration) (int) state["micConfig"]);
+                    if (state.hasProperty ("micPattern"))
+                        arr.setAllPatterns ((Worldizer::MicPattern) (int) state["micPattern"]);
+
+                    const auto mic0Pos = getVec ("mic0X", "mic0Y", "mic0Z", arr.getMic (0).getPosition());
+                    const auto mic0Dir = getVec ("mic0OX", "mic0OY", "mic0OZ", arr.getMic (0).getOrientation());
+
+                    switch (arr.getConfiguration())
                     {
-                        const juce::ScopedLock sl (presetLock);
-                        if (currentPresetMetadata.has_value())
-                        {
-                            const auto ds = currentPresetMetadata->scene.getSource().getPosition();
-                            const auto dm = currentPresetMetadata->scene.getMic().getPosition();
-                            auto close = [] (Worldizer::Vec3 a, Worldizer::Vec3 b)
-                            { return (a - b).length() < 1.0e-3f; };
-                            differs = ! (close (ds, src) && close (dm, mic));
-                        }
+                        case Worldizer::MicArray::Configuration::Single:
+                            arr.getMic (0).setPosition (mic0Pos);
+                            arr.getMic (0).setOrientation (mic0Dir);
+                            break;
+
+                        case Worldizer::MicArray::Configuration::StereoXY:
+                            if (state.hasProperty ("xyAngle"))   arr.setXYAngleDegrees ((float) state["xyAngle"]);
+                            arr.setXYOrientation (getVec ("xyFacingX", "xyFacingY", "xyFacingZ", arr.getXYOrientation()));
+                            arr.setXYPosition (mic0Pos); // coincident; orientations derived from facing+angle
+                            break;
+
+                        case Worldizer::MicArray::Configuration::SpacedPair:
+                            arr.getMic (0).setPosition (mic0Pos);
+                            arr.getMic (0).setOrientation (mic0Dir);
+                            arr.getMic (1).setPosition    (getVec ("mic1X", "mic1Y", "mic1Z", arr.getMic (1).getPosition()));
+                            arr.getMic (1).setOrientation (getVec ("mic1OX", "mic1OY", "mic1OZ", arr.getMic (1).getOrientation()));
+                            break;
                     }
-                    if (differs)
-                        setSourceAndMicPositions (src, mic, true);
                 }
+                else if (state.hasProperty ("sourceX"))
+                {
+                    // === Legacy Slice 4 format: single omni mic ===
+                    edited.getSource().setPosition (getVec ("sourceX", "sourceY", "sourceZ", edited.getSource().getPosition()));
+                    edited.getMicArray().setConfiguration (Worldizer::MicArray::Configuration::Single);
+                    edited.getMicArray().getMic (0).setPosition (getVec ("micX", "micY", "micZ", edited.getMic().getPosition()));
+                }
+
+                // Sector geometry (Slice 6a). If present in state, parse and overlay.
+                bool sectorsRestored = false;
+                if (state.hasProperty ("sectorGeometry"))
+                {
+                    const auto sg = juce::JSON::parse (state["sectorGeometry"].toString());
+                    juce::String sErr;
+                    sectorsRestored = edited.getSectorGeometry().fromJson (sg, sErr) && ! edited.getSectorGeometry().isEmpty();
+                }
+
+                if (sectorsRestored || interactiveStateDiffers (edited, defaultScene))
+                    applyEditedScene (edited, true);
+
+                // The edit-dirty flag is part of session state too, restored last so
+                // the apply above doesn't accidentally clear it via setCurrentPresetId.
+                if (state.hasProperty ("dirty"))
+                    dirtyFlag.store ((bool) state["dirty"]);
             }
         }
     }

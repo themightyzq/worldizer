@@ -222,9 +222,18 @@ namespace
         if (stream == nullptr) return false;
         if (auto writer = wav.createWriterFor (stream,
                               juce::AudioFormatWriterOptions{}
-                                  .withSampleRate (sr).withNumChannels (1).withBitsPerSample (24)))
+                                  .withSampleRate (sr)
+                                  .withNumChannels (juce::jmax (1, buf.getNumChannels()))
+                                  .withBitsPerSample (24)))
             return writer->writeFromAudioSampleBuffer (buf, 0, buf.getNumSamples());
         return false;
+    }
+
+    Vec3 parseVec3 (const juce::String& s, Vec3 fallback)
+    {
+        auto parts = juce::StringArray::fromTokens (s, ",", "");
+        if (parts.size() < 3) return fallback;
+        return { parts[0].getFloatValue(), parts[1].getFloatValue(), parts[2].getFloatValue() };
     }
 
     // Bakes DistanceModel pre-delay + attenuation into an IR (for offline auditioning).
@@ -276,9 +285,32 @@ int main (int argc, char** argv)
         const float distance = optVal (argc, argv, "--distance", "-1").getFloatValue();
         const float accuracy = optVal (argc, argv, "--accuracy", "0.4").getFloatValue();
 
+        // Slice 5: directional / multi-mic options.
+        const juce::String patternStr = optVal (argc, argv, "--pattern", "omni");
+        const juce::String configStr  = optVal (argc, argv, "--config",  "single");
+        const float xyAngle = optVal (argc, argv, "--xy-angle", "90").getFloatValue();
+
         bool ok = false;
         Scene scene = TestScenes::byName (sceneName, ok);
         if (! ok) { std::cerr << "Unknown scene: " << sceneName << "\n"; return 1; }
+
+        {
+            auto& arr = scene.getMicArray();
+            const auto cfg = configStr == "xy"     ? MicArray::Configuration::StereoXY
+                           : configStr == "spaced" ? MicArray::Configuration::SpacedPair
+                                                    : MicArray::Configuration::Single;
+            arr.setConfiguration (cfg);
+            if (cfg == MicArray::Configuration::StereoXY) arr.setXYAngleDegrees (xyAngle);
+            arr.setAllPatterns (patternStr == "shotgun" ? MicPattern::Shotgun : MicPattern::Omnidirectional);
+
+            // --mic-orient x,y,z sets mic 0's facing (or the XY array facing).
+            if (auto o = optVal (argc, argv, "--mic-orient", ""); o.isNotEmpty())
+            {
+                const auto dir = parseVec3 (o, arr.getMic (0).getOrientation());
+                if (cfg == MicArray::Configuration::StereoXY) arr.setXYOrientation (dir);
+                else arr.getMic (0).setOrientation (dir);
+            }
+        }
 
         constexpr int sr = 48000;
         RayTracer tracer;
@@ -287,6 +319,7 @@ int main (int argc, char** argv)
 
         IRBuilder builder;
         IRBuilder::Settings is; is.sampleRate = sr; is.synthesizeLateTail = ! noTail;
+        is.envelopeSmoothingScale = optVal (argc, argv, "--smooth", "1").getFloatValue();
         auto ir = builder.build (result, is);
 
         if (distance >= 0.0f)

@@ -1,12 +1,13 @@
 /*
-    MicMoveTest — verifies the Slice 4.5 IR architecture and drag-to-audition engine:
+    MicMoveTest — verifies the IR architecture across mic-array configurations:
 
       1. Moving the mic still changes the rendered room-response IR (different
-         reflection pattern from a different listening point).
-      2. The direct sound is now at sample 0 in EVERY render, regardless of mic
-         position — distance has moved out of the IR and onto the wet path.
-      3. DistanceModel pre-delay and attenuation change with source/mic distance
-         (the cue that the IR no longer carries).
+         reflection pattern from a different listening point) — for Single, Stereo XY
+         (move the array), and Spaced Pair (move one mic).
+      2. The direct sound is at sample 0 in the nearest channel (distance lives on the
+         wet path, not in the IR).
+      3. DistanceModel pre-delay and attenuation change with source/mic distance.
+      4. Stereo configurations produce 2-channel IRs.
 */
 #include <JuceHeader.h>
 #include <iostream>
@@ -21,9 +22,8 @@ using namespace Worldizer;
 
 namespace
 {
-    juce::AudioBuffer<float> render (Scene scene, Vec3 micPos)
+    juce::AudioBuffer<float> renderScene (const Scene& scene)
     {
-        scene.getMic().setPosition (micPos);
         RayTracer tracer;
         RayTracer::Settings rs; rs.numRays = 50000; rs.randomSeed = 12345;
         const auto result = tracer.trace (scene, rs, 48000);
@@ -32,9 +32,16 @@ namespace
         return builder.build (result, is);
     }
 
-    int firstNonZero (const juce::AudioBuffer<float>& ir)
+    juce::AudioBuffer<float> renderSingle (Scene scene, Vec3 micPos)
     {
-        const auto* d = ir.getReadPointer (0);
+        scene.getMicArray().setConfiguration (MicArray::Configuration::Single);
+        scene.getMicArray().getMic (0).setPosition (micPos);
+        return renderScene (scene);
+    }
+
+    int firstNonZero (const juce::AudioBuffer<float>& ir, int ch)
+    {
+        const auto* d = ir.getReadPointer (ch);
         for (int i = 0; i < ir.getNumSamples(); ++i)
             if (std::abs (d[i]) > 1.0e-6f) return i;
         return -1;
@@ -47,40 +54,44 @@ namespace
         float peak = 0.0f; int pk = 0; double ss = 0.0;
         for (int i = 0; i < n; ++i) { const float a = std::abs (d[i]); if (a > peak) { peak = a; pk = i; } ss += (double) d[i] * d[i]; }
         const float rms = (float) std::sqrt (ss / n);
-        std::cout << label.toRawUTF8() << ": len " << juce::String (n / 48000.0, 2).toRawUTF8() << "s, sample0 "
-                  << juce::String (d[0], 4).toRawUTF8() << ", first-nonzero " << firstNonZero (ir)
+        std::cout << label.toRawUTF8() << ": ch " << ir.getNumChannels() << ", len "
+                  << juce::String (n / 48000.0, 2).toRawUTF8() << "s, ch0-first-nonzero " << firstNonZero (ir, 0)
                   << ", peak@" << pk << ", rms " << juce::String (20.0 * std::log10 (rms + 1e-20), 1).toRawUTF8() << " dB\n";
     }
 
+    // RMS difference across ALL channels (so moving mic 1 — which only changes the
+    // right channel — is detected too).
     double rmsDiffDb (const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b)
     {
-        const int n = juce::jmin (a.getNumSamples(), b.getNumSamples());
+        const int n  = juce::jmin (a.getNumSamples(), b.getNumSamples());
+        const int ch = juce::jmin (a.getNumChannels(), b.getNumChannels());
         double d = 0.0;
-        for (int i = 0; i < n; ++i)
-        {
-            const double diff = (double) a.getReadPointer (0)[i] - (double) b.getReadPointer (0)[i];
-            d += diff * diff;
-        }
-        return 20.0 * std::log10 (std::sqrt (d / n) + 1e-20);
+        for (int c = 0; c < ch; ++c)
+            for (int i = 0; i < n; ++i)
+            {
+                const double diff = (double) a.getReadPointer (c)[i] - (double) b.getReadPointer (c)[i];
+                d += diff * diff;
+            }
+        return 20.0 * std::log10 (std::sqrt (d / juce::jmax (1, n * ch)) + 1e-20);
     }
 }
 
 int main()
 {
+    bool ok = true;
+
+    // --- 1 & 2: single-mic IR changes with mic position; direct at sample 0. ---
     struct Case { const char* name; Scene scene; Vec3 a; Vec3 b; };
     std::vector<Case> cases = {
         { "Small Concrete Room", TestScenes::smallConcreteRoom(), { 2.0f, 0.0f, 1.5f }, { 2.6f, 1.6f, 1.5f } },
         { "Gymnasium",           TestScenes::gymnasium(),         { 5.0f, 0.0f, 1.5f }, { -10.0f, -7.0f, 1.5f } },
     };
 
-    bool ok = true;
-
-    // --- 1 & 2: IR changes with mic position; direct stays at sample 0. ---
     for (auto& c : cases)
     {
-        std::cout << "\n=== " << c.name << " ===\n";
-        const auto irA = render (c.scene, c.a);
-        const auto irB = render (c.scene, c.b);
+        std::cout << "\n=== " << c.name << " (Single) ===\n";
+        const auto irA = renderSingle (c.scene, c.a);
+        const auto irB = renderSingle (c.scene, c.b);
         report ("mic A", irA);
         report ("mic B", irB);
 
@@ -89,13 +100,47 @@ int main()
         std::cout << "RMS of (A - B): " << juce::String (diff, 1).toRawUTF8() << " dB  -> "
                   << (differ ? "DIFFERENT (audible)" : "identical") << "\n";
 
-        const bool directA0 = firstNonZero (irA) == 0 && firstNonZero (irB) == 0;
+        const bool directA0 = firstNonZero (irA, 0) == 0 && firstNonZero (irB, 0) == 0;
         std::cout << "Direct at sample 0 (both positions): " << (directA0 ? "yes" : "NO") << "\n";
-
         ok = ok && differ && directA0;
     }
 
-    // --- 3: DistanceModel output changes with distance. ---
+    // --- 3: Stereo XY — moving the array changes the IR; 2 channels. ---
+    {
+        std::cout << "\n=== Gymnasium (Stereo XY: move array) ===\n";
+        Scene s = TestScenes::gymnasium();
+        s.getMicArray().setConfiguration (MicArray::Configuration::StereoXY);
+        s.getMicArray().setXYPosition ({ 5.0f, 0.0f, 1.5f });
+        const auto irA = renderScene (s);
+        s.getMicArray().setXYPosition ({ -8.0f, 6.0f, 1.5f });
+        const auto irB = renderScene (s);
+        report ("array A", irA);
+        report ("array B", irB);
+        const bool stereo = irA.getNumChannels() == 2 && irB.getNumChannels() == 2;
+        const bool differ = rmsDiffDb (irA, irB) > -60.0;
+        std::cout << "2-channel: " << (stereo ? "yes" : "NO") << "; moving array changes IR: " << (differ ? "yes" : "NO") << "\n";
+        ok = ok && stereo && differ;
+    }
+
+    // --- 4: Spaced Pair — moving one mic changes the IR; 2 channels. ---
+    {
+        std::cout << "\n=== Gymnasium (Spaced Pair: move mic 1) ===\n";
+        Scene s = TestScenes::gymnasium();
+        s.getMicArray().setConfiguration (MicArray::Configuration::Single);
+        s.getMicArray().getMic (0).setPosition ({ 5.0f, -1.0f, 1.5f });
+        s.getMicArray().setConfiguration (MicArray::Configuration::SpacedPair);
+        const auto irA = renderScene (s);
+        s.getMicArray().getMic (1).setPosition ({ 5.0f, 4.0f, 1.5f });
+        const auto irB = renderScene (s);
+        report ("pair A", irA);
+        report ("pair B", irB);
+        const bool stereo = irA.getNumChannels() == 2 && irB.getNumChannels() == 2;
+        const bool differ = rmsDiffDb (irA, irB) > -60.0;
+        std::cout << "2-channel: " << (stereo ? "yes" : "NO") << "; moving mic 1 changes IR: " << (differ ? "yes" : "NO") << "\n";
+        ok = ok && stereo && differ;
+    }
+
+    // --- 5: DistanceModel output changes with distance. ---
     std::cout << "\n=== DistanceModel responds to distance ===\n";
     DistanceModel dm; // default plugin model (accuracy 0.4)
     const float near = 2.0f, far = 20.0f;

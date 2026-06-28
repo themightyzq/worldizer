@@ -7,7 +7,7 @@ namespace Worldizer
     // Product identity — locked in
     constexpr auto kProductName        = "Worldizer";
     constexpr auto kCompanyName        = "ZQSFX";
-    constexpr auto kCompanyWebsite     = "https://github.com/zqsfx/worldizer";
+    constexpr auto kCompanyWebsite     = "https://github.com/themightyzq/worldizer";
     constexpr auto kBundleId           = "com.zqsfx.worldizer";
     constexpr auto kPluginManufCode    = "ZQSF";
     constexpr auto kPluginCode         = "Wrld";
@@ -15,12 +15,12 @@ namespace Worldizer
     // Version
     constexpr int  kVersionMajor       = 0;
     constexpr int  kVersionMinor       = 0;
-    constexpr int  kVersionPatch       = 4;
-    constexpr auto kVersionString      = "0.0.4";
+    constexpr int  kVersionPatch       = 6;
+    constexpr auto kVersionString      = "0.0.6";
 
     // Window
     constexpr int  kDefaultWindowWidth  = 900;
-    constexpr int  kDefaultWindowHeight = 650;
+    constexpr int  kDefaultWindowHeight = 700;  // +50 over Slice 4 for the mic control row
     constexpr int  kMinWindowWidth      = 700;
     constexpr int  kMinWindowHeight     = 550;
     constexpr int  kMaxWindowWidth      = 1400;

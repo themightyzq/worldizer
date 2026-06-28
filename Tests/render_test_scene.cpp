@@ -93,13 +93,15 @@ int main (int argc, char* argv[])
     const double traceMs = juce::Time::getMillisecondCounterHiRes() - traceStart;
     std::cout << "done (" << juce::String (traceMs / 1000.0, 2) << "s)\n";
 
+    const auto& direct0 = result.directPerMic[0];
     std::cout << "Result:\n"
-              << "  Direct distance: " << juce::String (result.directDistance, 3) << " m\n"
-              << "  Direct arrival: "  << juce::String (result.directArrivalTime * 1000.0f, 2)
-              << " ms (sample " << (int) std::lround (result.directArrivalTime * sampleRate) << ")\n"
-              << "  Direct visible: "  << (result.directVisible ? "yes" : "no") << "\n"
+              << "  Mics: "            << result.getNumMics() << "\n"
+              << "  Direct distance: " << juce::String (direct0.distance, 3) << " m\n"
+              << "  Direct arrival: "  << juce::String (direct0.arrivalTime * 1000.0f, 2)
+              << " ms (sample " << (int) std::lround (direct0.arrivalTime * sampleRate) << ")\n"
+              << "  Direct visible: "  << (direct0.visible ? "yes" : "no") << "\n"
               << "  Total rays: "      << result.numRays << "\n"
-              << "  Mic hits: "        << result.hitCount << "\n";
+              << "  Mic hits (mic 0): "<< result.hitCountPerMic[0] << "\n";
 
     IRBuilder builder;
     IRBuilder::Settings irSettings;

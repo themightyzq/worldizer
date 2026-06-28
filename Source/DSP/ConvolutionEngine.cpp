@@ -49,18 +49,30 @@ void ConvolutionEngine::loadIR (const juce::AudioBuffer<float>& ir, double irSam
         return;
 
     // Deep copy (this runs on the background thread, so allocation is fine), then
-    // load into the idle convolver. Mono IR applied to all channels.
+    // load into the idle convolver.
     //
-    // Trim::yes / Normalise::yes are deliberate (revisited in Slice 4.5): the IR is
-    // now a distance-INDEPENDENT room response with the direct at sample 0, so Trim
-    // strips no meaningful lead (latency stays ~0, dry/wet aligned) and Normalise
-    // keeps the wet level consistent across presets. The two strongest distance cues
-    // — time-of-flight pre-delay and inverse-distance level — are applied separately
-    // on the wet path by DistanceModel, so they are NOT discarded by these flags.
+    // Mono IR (1 channel, Stereo::no): the same response is applied independently to
+    // L and R (pseudo-stereo) — single mic / shipped omni presets. Stereo IR (>= 2
+    // channels, Stereo::yes): channel 0 -> L, channel 1 -> R — true stereo from a
+    // mic array (XY / spaced pair). juce::dsp::Convolution reconfigures the loaded IR
+    // either way; both convolverA/B were prepared with the output channel count, so
+    // switching mono<->stereo across a crossfade just works.
+    //
+    // Trim::yes / Normalise::yes are deliberate (revisited in Slice 4.5): the IR is a
+    // distance-INDEPENDENT room response with the direct near sample 0, so Trim strips
+    // no meaningful lead (latency stays ~0, dry/wet aligned) and Normalise keeps the
+    // wet level consistent. Distance cues are applied separately on the wet path by
+    // DistanceModel, so they are NOT discarded by these flags. (For a stereo IR the
+    // per-channel inter-mic level/time differences ARE in the IR and survive: Trim
+    // crops a common lead from both channels, Normalise scales both by one factor.)
+    const auto stereoFlag = ir.getNumChannels() >= 2
+                                ? juce::dsp::Convolution::Stereo::yes
+                                : juce::dsp::Convolution::Stereo::no;
+
     juce::AudioBuffer<float> copy (ir);
     convolverB->reset();
     convolverB->loadImpulseResponse (std::move (copy), irSampleRate,
-                                     juce::dsp::Convolution::Stereo::no,
+                                     stereoFlag,
                                      juce::dsp::Convolution::Trim::yes,
                                      juce::dsp::Convolution::Normalise::yes);
 

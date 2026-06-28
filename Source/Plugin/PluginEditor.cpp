@@ -11,9 +11,16 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
 {
     setLookAndFeel (&lookAndFeel);
 
+    // Combo popups in the Worldizer palette (the L&F has no custom combo drawing).
+    lookAndFeel.setColour (juce::PopupMenu::backgroundColourId,            Col::surface);
+    lookAndFeel.setColour (juce::PopupMenu::textColourId,                  Col::onSurface);
+    lookAndFeel.setColour (juce::PopupMenu::highlightedBackgroundColourId, Col::primaryDim);
+    lookAndFeel.setColour (juce::PopupMenu::highlightedTextColourId,       Col::background);
+
     // --- Header buttons ---
-    editButton.setEnabled (false);
-    editButton.setTooltip ("Geometry editor coming in a future update.");
+    editButton.setClickingTogglesState (true);
+    editButton.setTooltip ("Enter / exit the geometry editor (S/D/X tools; Cmd+Z undo; Esc cancel).");
+    editButton.onClick = [this] { setEditMode (editButton.getToggleState()); };
     addAndMakeVisible (editButton);
 
     bypassButton.setClickingTogglesState (true);
@@ -33,17 +40,32 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
     addAndMakeVisible (presetBrowser);
 
     // --- Room view ---
-    if (auto meta = p.getCurrentPresetMetadata())
-        roomView.setScene (meta->scene);
-    roomView.onPositionsChanged = [this] (Worldizer::Vec3 s, Worldizer::Vec3 m)
+    roomView.setScene (p.getCurrentScene());
+    previousScene = p.getCurrentScene();
+    roomView.onSceneEdited = [this] (const Worldizer::Scene& s, bool finalized)
     {
+        // Geometry change vs the last committed snapshot? Push the snapshot for undo
+        // and mark the session dirty (drives the discard prompt on preset switch).
+        if (finalized)
+        {
+            const auto& oldSG = previousScene.getSectorGeometry().toJson();
+            const auto& newSG = s.getSectorGeometry().toJson();
+            const bool geometryChanged = juce::JSON::toString (oldSG, true) != juce::JSON::toString (newSG, true);
+            if (geometryChanged)
+            {
+                undoStack.push (previousScene);
+                processorRef.markDirty();
+            }
+            previousScene = s;
+        }
+
         positionsModified = true;
-        processorRef.setSourceAndMicPositions (s, m, false);
+        processorRef.applyEditedScene (s, finalized);
+        // Keep the mic knobs tracking an arrow/icon drag (value-only, no relayout).
+        xyAngleSlider.setValue (processorRef.getXYAngleDegrees(), juce::dontSendNotification);
+        rotateSlider.setValue (currentRotateAzimuth(), juce::dontSendNotification);
+        if (editMode) inspector.setScene (processorRef.getCurrentScene());
         updateSubtitle();
-    };
-    roomView.onPositionsFinalized = [this] (Worldizer::Vec3 s, Worldizer::Vec3 m)
-    {
-        processorRef.setSourceAndMicPositions (s, m, true);
     };
     addAndMakeVisible (roomView);
 
@@ -85,9 +107,191 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
     renderingIndicator.setVisible (false);
     addAndMakeVisible (renderingIndicator);
 
+    // --- Mic array controls (control row 2) ---
+    auto makeSectionLabel = [this] (juce::Label& l, const juce::String& text, float pt, juce::Colour c)
+    {
+        l.setText (text, juce::dontSendNotification);
+        l.setColour (juce::Label::textColourId, c);
+        l.setFont (juce::Font (juce::FontOptions (pt).withStyle ("Bold")));
+        l.setJustificationType (juce::Justification::centredLeft);
+        addAndMakeVisible (l);
+    };
+    makeSectionLabel (micSectionLabel, "MIC",     12.0f, Col::primary);
+    makeSectionLabel (micConfigLabel,  "Config",  11.0f, Col::onSurfaceVariant);
+    makeSectionLabel (micPatternLabel, "Pattern", 11.0f, Col::onSurfaceVariant);
+    makeSectionLabel (xyAngleLabel,    "XY Angle", 11.0f, Col::onSurfaceVariant);
+
+    auto styleCombo = [] (juce::ComboBox& c)
+    {
+        c.setColour (juce::ComboBox::backgroundColourId, Col::surfaceVariant);
+        c.setColour (juce::ComboBox::textColourId,       Col::onSurface);
+        c.setColour (juce::ComboBox::outlineColourId,    Col::outline);
+        c.setColour (juce::ComboBox::arrowColourId,      Col::primary);
+    };
+    styleCombo (micConfigCombo);
+    styleCombo (micPatternCombo);
+
+    // Config selector — ids: 1 Single, 2 Stereo XY, 3 Spaced Pair.
+    micConfigCombo.addItem ("Single",      1);
+    micConfigCombo.addItem ("Stereo XY",   2);
+    micConfigCombo.addItem ("Spaced Pair", 3);
+    micConfigCombo.setTooltip ("Microphone configuration. Stereo XY / Spaced Pair produce a true-stereo IR.");
+    micConfigCombo.onChange = [this]
+    {
+        using Cfg = Worldizer::MicArray::Configuration;
+        const auto cfg = micConfigCombo.getSelectedId() == 2 ? Cfg::StereoXY
+                       : micConfigCombo.getSelectedId() == 3 ? Cfg::SpacedPair
+                                                             : Cfg::Single;
+        processorRef.setMicConfiguration (cfg); // full re-render
+        positionsModified = true;
+        refreshRoomViewFromProcessor();
+        syncMicControlsFromProcessor();
+        updateSubtitle();
+    };
+    addAndMakeVisible (micConfigCombo);
+
+    // Pattern selector — ids: 1 Omni, 2 Shotgun.
+    micPatternCombo.addItem ("Omni",    1);
+    micPatternCombo.addItem ("Shotgun", 2);
+    micPatternCombo.setTooltip ("Mic polar pattern. Shotgun has a narrow forward lobe — rotate it with the arrow.");
+    micPatternCombo.onChange = [this]
+    {
+        const auto pat = micPatternCombo.getSelectedId() == 2 ? Worldizer::MicPattern::Shotgun
+                                                              : Worldizer::MicPattern::Omnidirectional;
+        processorRef.setMicPattern (pat); // full re-render
+        positionsModified = true;
+        refreshRoomViewFromProcessor();
+        syncMicControlsFromProcessor(); // show/hide the Rotate knob for shotgun
+        updateSubtitle();
+    };
+    addAndMakeVisible (micPatternCombo);
+
+    // XY splay angle — rotary, 30..180 degrees.
+    xyAngleSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    xyAngleSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 56, 16);
+    xyAngleSlider.setRange (30.0, 180.0, 1.0);
+    xyAngleSlider.setTextValueSuffix (juce::String::fromUTF8 ("\xc2\xb0"));
+    xyAngleSlider.setValue (90.0, juce::dontSendNotification);
+    xyAngleSlider.setTooltip ("Angle between the two XY capsules. Wider = broader stereo image.");
+    xyAngleSlider.onValueChange = [this]
+    {
+        // Preview while dragging the knob; full quality on text entry / release.
+        const bool full = ! xyAngleSlider.isMouseButtonDown();
+        processorRef.setXYAngleDegrees ((float) xyAngleSlider.getValue(), full);
+        positionsModified = true;
+        refreshRoomViewFromProcessor();
+    };
+    xyAngleSlider.onDragEnd = [this]
+    {
+        processorRef.setXYAngleDegrees ((float) xyAngleSlider.getValue(), true);
+        refreshRoomViewFromProcessor();
+    };
+    addAndMakeVisible (xyAngleSlider);
+
+    // Rotate — azimuth of the directional element (single mic / XY array facing /
+    // the selected spaced-pair mic). Shown only for shotgun. 0deg = +X (east);
+    // increases counter-clockwise (matches the top-down view).
+    makeSectionLabel (rotateLabel, "Rotate", 11.0f, Col::onSurfaceVariant);
+    rotateSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    rotateSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 56, 16);
+    rotateSlider.setRange (0.0, 360.0, 1.0);
+    rotateSlider.setTextValueSuffix (juce::String::fromUTF8 ("\xc2\xb0"));
+    rotateSlider.setTooltip ("Rotate the selected directional mic (or drag its arrow in the room view).");
+    rotateSlider.onValueChange = [this]
+    {
+        const bool full = ! rotateSlider.isMouseButtonDown();
+        applyRotate ((float) rotateSlider.getValue(), full);
+        positionsModified = true;
+        refreshRoomViewFromProcessor();
+    };
+    rotateSlider.onDragEnd = [this] { applyRotate ((float) rotateSlider.getValue(), true); refreshRoomViewFromProcessor(); };
+    addAndMakeVisible (rotateSlider);
+
+    // Clicking a spaced-pair mic re-targets the Rotate knob.
+    roomView.onMicSelected = [this] (int) { syncMicControlsFromProcessor(); };
+
+    syncMicControlsFromProcessor();
+
+    // === Edit-mode UI wiring (Slice 6a) — components are hidden until setEditMode(true) ===
+    addChildComponent (editorTools);
+    editorTools.onToolChanged = [this] (auto t) { roomView.setTool (t); updateStatusBar(); };
+    editorTools.onSnapChanged = [this] (bool on) { roomView.setSnapToGrid (on); };
+    editorTools.onUndo        = [this] { doUndo(); };
+
+    addChildComponent (inspector);
+    inspector.onVertexMoved = [this] (int idx, float x, float y)
+    {
+        handleInspectorEdit ([idx, x, y] (Worldizer::Scene& s)
+        {
+            if (! s.getSectorGeometry().sectors.empty())
+                s.getSectorGeometry().sectors[0].moveVertex (idx, { x, y });
+        });
+    };
+    inspector.onLineDefMaterialChanged = [this] (int idx, juce::String m)
+    {
+        handleInspectorEdit ([idx, m] (Worldizer::Scene& s)
+        {
+            if (! s.getSectorGeometry().sectors.empty()
+                && idx >= 0 && (size_t) idx < s.getSectorGeometry().sectors[0].lineDefs.size())
+                s.getSectorGeometry().sectors[0].lineDefs[(size_t) idx].frontMaterial = m;
+        });
+    };
+    inspector.onSectorFloorHeightChanged   = [this] (float h) { handleInspectorEdit ([h] (Worldizer::Scene& s) { if (! s.getSectorGeometry().sectors.empty()) s.getSectorGeometry().sectors[0].floorHeight   = h; }); };
+    inspector.onSectorCeilingHeightChanged = [this] (float h) { handleInspectorEdit ([h] (Worldizer::Scene& s) { if (! s.getSectorGeometry().sectors.empty()) s.getSectorGeometry().sectors[0].ceilingHeight = h; }); };
+    inspector.onSectorFloorMaterialChanged   = [this] (juce::String m) { handleInspectorEdit ([m] (Worldizer::Scene& s) { if (! s.getSectorGeometry().sectors.empty()) s.getSectorGeometry().sectors[0].floorMaterial   = m; }); };
+    inspector.onSectorCeilingMaterialChanged = [this] (juce::String m) { handleInspectorEdit ([m] (Worldizer::Scene& s) { if (! s.getSectorGeometry().sectors.empty()) s.getSectorGeometry().sectors[0].ceilingMaterial = m; }); };
+
+    statusBar.setColour (juce::Label::backgroundColourId, Col::surface);
+    statusBar.setColour (juce::Label::textColourId,       Col::onSurfaceVariant);
+    statusBar.setFont (juce::Font (juce::FontOptions (11.0f)));
+    statusBar.setJustificationType (juce::Justification::centredLeft);
+    addChildComponent (statusBar);
+
+    roomView.onSelectionChanged = [this] (Worldizer::EditorSelection sel)
+    {
+        inspector.setSelection (sel);
+        updateStatusBar();
+    };
+    roomView.onSectorCreated = [this] (const Worldizer::Sector&)
+    {
+        // The room view already mutated its own scene + fired onSceneEdited; this hook
+        // just marks dirty, swaps the active tool back to Select, and refreshes the UI.
+        processorRef.markDirty();
+        editorTools.setTool (Worldizer::EditorToolPalette::Tool::Select, juce::dontSendNotification);
+        positionsModified = true;
+        updateSubtitle();
+        updateStatusBar();
+    };
+    roomView.onDeleteRequested = [this] (Worldizer::EditorSelection sel)
+    {
+        handleInspectorEdit ([sel] (Worldizer::Scene& s)
+        {
+            if (s.getSectorGeometry().sectors.empty()) return;
+            auto& sector = s.getSectorGeometry().sectors[0];
+            if (sel.kind == Worldizer::EditorSelection::Kind::Vertex)
+            {
+                sector.removeVertex (sel.index);
+                if (sector.vertices.size() < 3)
+                    s.getSectorGeometry().sectors.clear();
+            }
+            else if (sel.kind == Worldizer::EditorSelection::Kind::Sector
+                  || sel.kind == Worldizer::EditorSelection::Kind::LineDef)
+            {
+                // Slice 6a: linedef delete collapses the whole sector (see prompt §5.5).
+                s.getSectorGeometry().sectors.clear();
+            }
+        });
+        roomView.setSelection ({});
+        inspector.setSelection ({});
+        updateStatusBar();
+    };
+
+    presetBrowser.onSaveAsRequested = [this] { onSaveAsButton(); };
+    setWantsKeyboardFocus (true);
+
     // --- Footer ---
-    githubLink.setButtonText ("github.com/zqsfx/worldizer");
-    githubLink.setURL (juce::URL ("https://github.com/zqsfx/worldizer"));
+    githubLink.setButtonText ("github.com/themightyzq/worldizer");
+    githubLink.setURL (juce::URL ("https://github.com/themightyzq/worldizer"));
     githubLink.setFont (juce::Font (juce::FontOptions (9.0f)), false, juce::Justification::centredRight);
     githubLink.setColour (juce::HyperlinkButton::textColourId, Col::onSurfaceMuted);
     addAndMakeVisible (githubLink);
@@ -111,11 +315,276 @@ WorldizerAudioProcessorEditor::~WorldizerAudioProcessorEditor()
 //==============================================================================
 void WorldizerAudioProcessorEditor::onPresetSelected (const juce::String& presetId)
 {
+    if (processorRef.hasUncommittedEdits())
+    {
+        // Snap the sidebar back to the current preset visually until the dialog resolves.
+        presetBrowser.setSelectedPresetId (processorRef.getCurrentPresetId());
+        confirmDiscardThenAsync ([this, presetId] { onPresetSelected (presetId); });
+        return;
+    }
     processorRef.setCurrentPresetId (presetId);
     positionsModified = false;
-    if (auto meta = processorRef.getCurrentPresetMetadata())
-        roomView.setScene (meta->scene);
+    refreshRoomViewFromProcessor();
+    syncMicControlsFromProcessor();
+    previousScene = processorRef.getCurrentScene();
+    undoStack.clear();
+    if (editMode) inspector.setScene (previousScene);
     updateSubtitle();
+    updateStatusBar();
+}
+
+void WorldizerAudioProcessorEditor::refreshRoomViewFromProcessor()
+{
+    roomView.setScene (processorRef.getCurrentScene());
+}
+
+void WorldizerAudioProcessorEditor::applyRotate (float azimuthDeg, bool full)
+{
+    const float a = juce::degreesToRadians (azimuthDeg);
+    const Worldizer::Vec3 dir { std::cos (a), std::sin (a), 0.0f };
+    using Cfg = Worldizer::MicArray::Configuration;
+    switch (processorRef.getMicConfiguration())
+    {
+        case Cfg::StereoXY:   processorRef.setXYOrientation (dir, full); break;
+        case Cfg::Single:     processorRef.setMicOrientation (0, dir, full); break;
+        case Cfg::SpacedPair: processorRef.setMicOrientation (roomView.getSelectedMic(), dir, full); break;
+    }
+}
+
+float WorldizerAudioProcessorEditor::currentRotateAzimuth() const
+{
+    using Cfg = Worldizer::MicArray::Configuration;
+    const auto cfg = processorRef.getMicConfiguration();
+
+    // Array facing for XY, the selected mic for a spaced pair, else mic 0.
+    Worldizer::Vec3 dir = cfg == Cfg::StereoXY   ? processorRef.getCurrentScene().getMicArray().getXYOrientation()
+                        : cfg == Cfg::SpacedPair ? processorRef.getMicOrientation (roomView.getSelectedMic())
+                                                 : processorRef.getMicOrientation (0);
+
+    float deg = juce::radiansToDegrees (std::atan2 (dir.y, dir.x));
+    if (deg < 0.0f) deg += 360.0f;
+    return deg;
+}
+
+//==============================================================================
+// Edit mode (Slice 6a)
+//==============================================================================
+void WorldizerAudioProcessorEditor::setEditMode (bool on)
+{
+    if (editMode == on)
+    {
+        editButton.setToggleState (on, juce::dontSendNotification);
+        return;
+    }
+
+    // Exiting edit mode with uncommitted edits: prompt async, re-enter on confirm.
+    if (! on && processorRef.hasUncommittedEdits())
+    {
+        editButton.setToggleState (true, juce::dontSendNotification);
+        confirmDiscardThenAsync ([this] { setEditMode (false); });
+        return;
+    }
+
+    editMode = on;
+    editButton.setToggleState (on, juce::dontSendNotification);
+
+    roomView.setEditMode (on);
+    editorTools.setVisible (on);
+    inspector.setVisible (on);
+    statusBar.setVisible (on);
+
+    if (on)
+    {
+        previousScene = processorRef.getCurrentScene();
+        undoStack.clear();
+        inspector.setScene (previousScene);
+        inspector.setSelection ({});
+        roomView.setSelection ({});
+        editorTools.setTool (Worldizer::EditorToolPalette::Tool::Select, juce::dontSendNotification);
+        roomView.setTool (Worldizer::EditorToolPalette::Tool::Select);
+        roomView.setSnapToGrid (editorTools.isSnapOn());
+        grabKeyboardFocus();
+    }
+
+    resized();
+    repaint();
+    updateStatusBar();
+    updateSubtitle();
+}
+
+void WorldizerAudioProcessorEditor::handleInspectorEdit (std::function<void (Worldizer::Scene&)> mutator)
+{
+    auto edited = processorRef.getCurrentScene();
+    mutator (edited);
+    // Treat inspector commits as finalized edits (full-quality render).
+    if (roomView.onSceneEdited)
+        roomView.onSceneEdited (edited, /*finalized*/ true);
+    // Keep roomView's local scene in sync so its render reflects the change.
+    roomView.setScene (edited);
+}
+
+void WorldizerAudioProcessorEditor::doUndo()
+{
+    if (! undoStack.canUndo()) return;
+    auto restored = undoStack.undo();
+    previousScene = restored;
+    processorRef.applyEditedScene (restored, /*finalized*/ true);
+    roomView.setScene (restored);
+    inspector.setScene (restored);
+    inspector.setSelection ({});
+    roomView.setSelection ({});
+    updateSubtitle();
+    updateStatusBar();
+}
+
+void WorldizerAudioProcessorEditor::updateStatusBar()
+{
+    if (! editMode) return;
+    juce::String msg;
+    if (roomView.getTool() == Worldizer::EditorToolPalette::Tool::Draw)
+    {
+        msg = "Draw: click to place vertices; click the first vertex to close the sector (Esc cancels).";
+    }
+    else if (roomView.getTool() == Worldizer::EditorToolPalette::Tool::Delete)
+    {
+        msg = "Delete: click an element to remove it.";
+    }
+    else
+    {
+        const auto sel = inspector.getSelection();
+        switch (sel.kind)
+        {
+            case Worldizer::EditorSelection::Kind::Vertex:  msg = "Selected: vertex " + juce::String (sel.index); break;
+            case Worldizer::EditorSelection::Kind::LineDef: msg = "Selected: wall "   + juce::String (sel.index); break;
+            case Worldizer::EditorSelection::Kind::Sector:  msg = "Selected: sector"; break;
+            case Worldizer::EditorSelection::Kind::None:    msg = "Select: click a vertex, wall, or sector. Drag a vertex to move it."; break;
+        }
+    }
+    if (undoStack.canUndo())
+        msg += "    (undo depth " + juce::String ((int) undoStack.getDepth()) + ")";
+    statusBar.setText (msg, juce::dontSendNotification);
+}
+
+void WorldizerAudioProcessorEditor::confirmDiscardThenAsync (std::function<void()> onProceed)
+{
+    if (! processorRef.hasUncommittedEdits()) { onProceed(); return; }
+
+    // Plugin builds disallow modal loops, so we show the prompt async and run the
+    // continuation on Discard. Cancel just returns without doing anything; the caller
+    // has already snapped any UI back to "nothing happened" before calling us.
+    auto opts = juce::MessageBoxOptions()
+                  .withIconType (juce::MessageBoxIconType::QuestionIcon)
+                  .withTitle   ("Unsaved changes")
+                  .withMessage ("You have uncommitted geometry edits. Discard them?")
+                  .withButton  ("Discard")
+                  .withButton  ("Cancel")
+                  .withAssociatedComponent (this);
+    juce::AlertWindow::showAsync (opts, [this, onProceed] (int result)
+    {
+        if (result == 1) { processorRef.clearDirtyFlag(); onProceed(); }
+    });
+}
+
+void WorldizerAudioProcessorEditor::onSaveAsButton()
+{
+    auto* w = new juce::AlertWindow ("Save As Preset", "Save the current scene to your user library.",
+                                     juce::AlertWindow::NoIcon, this);
+    w->addTextEditor ("name", "", "Name");
+    w->addTextEditor ("desc", "", "Description (optional)");
+    w->addTextEditor ("tags", "", "Tags (comma-separated, optional)");
+    const juce::StringArray cats { "Indoor", "Outdoor", "Vehicles/Devices", "Cinematic", "Experimental" };
+    w->addComboBox ("cat", cats, "Category");
+    w->addButton ("Save",   1, juce::KeyPress (juce::KeyPress::returnKey));
+    w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    w->enterModalState (true, juce::ModalCallbackFunction::create ([this, w] (int code)
+    {
+        std::unique_ptr<juce::AlertWindow> owner (w);
+        if (code != 1) return;
+
+        const juce::String name = w->getTextEditor ("name")->getText().trim();
+        if (name.isEmpty())
+        {
+            juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
+                                                    "Save As", "A preset name is required.", "OK", this);
+            return;
+        }
+
+        const juce::String cat  = w->getComboBoxComponent ("cat")->getText();
+        const juce::String desc = w->getTextEditor ("desc")->getText();
+        const auto tags         = juce::StringArray::fromTokens (w->getTextEditor ("tags")->getText(), ",", "");
+
+        juce::String err;
+        // The user typed the name intentionally — Save As always overwrites a same-named
+        // preset. To keep both, pick a different name. (Future polish: ask first.)
+        if (! processorRef.saveCurrentSceneAsPreset (name, cat, desc, tags, /*overwrite*/ true, err))
+        {
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+                "Save failed", err, "OK", this);
+            return;
+        }
+
+        presetBrowser.refreshList();
+        presetBrowser.setSelectedPresetId (processorRef.getCurrentPresetId());
+        refreshRoomViewFromProcessor();
+        previousScene = processorRef.getCurrentScene();
+        undoStack.clear();
+        positionsModified = false;
+        updateSubtitle();
+    }), false);
+}
+
+bool WorldizerAudioProcessorEditor::keyPressed (const juce::KeyPress& k)
+{
+    // Cmd/Ctrl+Z anywhere when in edit mode.
+    if (k == juce::KeyPress ('z', juce::ModifierKeys::commandModifier, 0))
+        { doUndo(); return true; }
+
+    if (! editMode) return false;
+
+    if (k == juce::KeyPress ('s'))    { editorTools.setTool (Worldizer::EditorToolPalette::Tool::Select); return true; }
+    if (k == juce::KeyPress ('d'))    { editorTools.setTool (Worldizer::EditorToolPalette::Tool::Draw);   return true; }
+    if (k == juce::KeyPress ('x'))    { editorTools.setTool (Worldizer::EditorToolPalette::Tool::Delete); return true; }
+    if (k == juce::KeyPress::escapeKey)
+    {
+        roomView.cancelDrawing();
+        roomView.setSelection ({});
+        inspector.setSelection ({});
+        updateStatusBar();
+        return true;
+    }
+    if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey)
+    {
+        const auto sel = roomView.getSelection();
+        if (sel.kind != Worldizer::EditorSelection::Kind::None && roomView.onDeleteRequested)
+            roomView.onDeleteRequested (sel);
+        return true;
+    }
+    return false;
+}
+
+void WorldizerAudioProcessorEditor::syncMicControlsFromProcessor()
+{
+    using Cfg = Worldizer::MicArray::Configuration;
+    const auto cfg = processorRef.getMicConfiguration();
+    micConfigCombo.setSelectedId (cfg == Cfg::StereoXY ? 2 : cfg == Cfg::SpacedPair ? 3 : 1,
+                                  juce::dontSendNotification);
+    const bool shotgun = processorRef.getMicPattern() == Worldizer::MicPattern::Shotgun;
+    micPatternCombo.setSelectedId (shotgun ? 2 : 1, juce::dontSendNotification);
+    xyAngleSlider.setValue (processorRef.getXYAngleDegrees(), juce::dontSendNotification);
+    rotateSlider.setValue (currentRotateAzimuth(), juce::dontSendNotification);
+
+    // XY angle applies to the coincident XY pair; Rotate applies to any directional mic.
+    const bool isXY = cfg == Cfg::StereoXY;
+    xyAngleLabel.setVisible (isXY);
+    xyAngleSlider.setVisible (isXY);
+    rotateLabel.setVisible (shotgun);
+    rotateSlider.setVisible (shotgun);
+    // For a spaced pair, the Rotate label names which mic it targets.
+    rotateLabel.setText (cfg == Cfg::SpacedPair ? (roomView.getSelectedMic() == 0 ? "Rotate L" : "Rotate R") : "Rotate",
+                         juce::dontSendNotification);
+
+    resized(); // visibility changed -> re-lay out the mic row
 }
 
 void WorldizerAudioProcessorEditor::updateSubtitle()
@@ -123,8 +592,10 @@ void WorldizerAudioProcessorEditor::updateSubtitle()
     juce::String preset = "—";
     if (auto meta = processorRef.getCurrentPresetMetadata())
         preset = meta->name;
+    const bool starred = positionsModified || processorRef.hasUncommittedEdits();
+    juce::String mode  = editMode ? "  \xe2\x80\xa2  EDITING" : juce::String();
     subtitleText = "v" + juce::String (Worldizer::kVersionString) + "  \xe2\x80\xa2  " + preset
-                 + (positionsModified ? "*" : "");
+                 + (starred ? "*" : "") + mode;
     repaint();
 }
 
@@ -138,8 +609,11 @@ void WorldizerAudioProcessorEditor::timerCallback()
     if (processorRef.getCurrentPresetId() != presetBrowser.getSelectedPresetId())
     {
         presetBrowser.setSelectedPresetId (processorRef.getCurrentPresetId());
-        if (auto meta = processorRef.getCurrentPresetMetadata())
-            roomView.setScene (meta->scene);
+        refreshRoomViewFromProcessor();
+        syncMicControlsFromProcessor();
+        previousScene = processorRef.getCurrentScene();
+        undoStack.clear();
+        if (editMode) inspector.setScene (previousScene);
         positionsModified = false;
         updateSubtitle();
     }
@@ -163,15 +637,19 @@ void WorldizerAudioProcessorEditor::paint (juce::Graphics& g)
     g.setFont (juce::Font (juce::FontOptions (11.0f)));
     g.drawText (subtitleText, 12, 40, getWidth() - 200, 16, juce::Justification::centredLeft);
 
-    // Control-row cluster dividers
+    // Control-area dividers: a line above the whole area, a line between the gain row
+    // and the mic row, and two vertical cluster dividers within the gain row.
     if (! controlRowBounds.isEmpty())
     {
         g.setColour (Col::outline);
-        const int x1 = controlRowBounds.getX() + (int) (controlRowBounds.getWidth() * 0.48f);
-        const int x2 = controlRowBounds.getX() + (int) (controlRowBounds.getWidth() * 0.78f);
-        g.drawVerticalLine (x1, (float) controlRowBounds.getY() + 8, (float) controlRowBounds.getBottom() - 8);
-        g.drawVerticalLine (x2, (float) controlRowBounds.getY() + 8, (float) controlRowBounds.getBottom() - 8);
         g.drawHorizontalLine (controlRowBounds.getY(), 0.0f, (float) getWidth());
+
+        const int x1 = knobRowBounds.getX() + (int) (knobRowBounds.getWidth() * 0.48f);
+        const int x2 = knobRowBounds.getX() + (int) (knobRowBounds.getWidth() * 0.78f);
+        g.drawVerticalLine (x1, (float) knobRowBounds.getY() + 8, (float) knobRowBounds.getBottom() - 8);
+        g.drawVerticalLine (x2, (float) knobRowBounds.getY() + 8, (float) knobRowBounds.getBottom() - 8);
+
+        g.drawHorizontalLine (micRowBounds.getY(), 8.0f, (float) getWidth() - 8.0f);
     }
 }
 
@@ -187,26 +665,28 @@ void WorldizerAudioProcessorEditor::resized()
     auto footer = area.removeFromBottom (24);
     githubLink.setBounds (footer.removeFromRight (260).reduced (8, 4));
 
-    controlRowBounds = area.removeFromBottom (130);
+    // Control area: gain row (top) + mic row (bottom).
+    controlRowBounds = area.removeFromBottom (150);
+    knobRowBounds = controlRowBounds.withHeight (86);
+    micRowBounds  = controlRowBounds.withTrimmedTop (86);
+
     {
-        auto cr = controlRowBounds.reduced (12, 10);
-        auto knobArea     = cr.removeFromLeft ((int) (controlRowBounds.getWidth() * 0.48f));
-        auto auditionArea = cr.removeFromLeft ((int) (controlRowBounds.getWidth() * 0.30f));
+        auto cr = knobRowBounds.reduced (12, 10);
+        auto knobArea     = cr.removeFromLeft ((int) (knobRowBounds.getWidth() * 0.48f));
+        auto auditionArea = cr.removeFromLeft ((int) (knobRowBounds.getWidth() * 0.30f));
         auto indicatorArea = cr;
 
         auto placeKnob = [] (juce::Slider& s, juce::Label& l, juce::Rectangle<int> colm)
         {
-            const int kd = 78;
-            const int kx = colm.getCentreX() - kd / 2;
-            s.setBounds (kx, colm.getY(), kd, kd + 18);
-            l.setBounds (colm.getX(), colm.getY() + kd + 18, colm.getWidth(), 16);
+            l.setBounds (colm.removeFromBottom (14));
+            s.setBounds (colm); // rotary + text box fill the remaining column height
         };
         const int colW = knobArea.getWidth() / 3;
         placeKnob (inputGainSlider,  inputGainLabel,  knobArea.removeFromLeft (colW));
         placeKnob (mixSlider,        mixLabel,        knobArea.removeFromLeft (colW));
         placeKnob (outputGainSlider, outputGainLabel, knobArea);
 
-        auto ab = auditionArea.withSizeKeepingCentre (auditionArea.getWidth() - 12, 32);
+        auto ab = auditionArea.withSizeKeepingCentre (auditionArea.getWidth() - 12, 30);
         const int bw = (ab.getWidth() - 18) / 4; // four buttons, 6 px gaps
         clickButton.setBounds  (ab.removeFromLeft (bw)); ab.removeFromLeft (6);
         clicksButton.setBounds (ab.removeFromLeft (bw)); ab.removeFromLeft (6);
@@ -216,10 +696,53 @@ void WorldizerAudioProcessorEditor::resized()
         renderingIndicator.setBounds (indicatorArea);
     }
 
-    // Sidebar + room view fill the rest.
+    // Mic row: [MIC]  Config [v]   Pattern [v]   XY Angle (knob)
+    {
+        auto mr = micRowBounds.reduced (12, 6);
+        micSectionLabel.setBounds (mr.removeFromLeft (44).withTrimmedTop (8));
+
+        auto comboCol = [&mr] (juce::Label& l, juce::Component& c, int labelW, int comboW)
+        {
+            l.setBounds (mr.removeFromLeft (labelW));
+            c.setBounds (mr.removeFromLeft (comboW).withSizeKeepingCentre (comboW, 26));
+            mr.removeFromLeft (16);
+        };
+        comboCol (micConfigLabel,  micConfigCombo,  50, 110);
+        comboCol (micPatternLabel, micPatternCombo, 54, 96);
+
+        // XY angle + Rotate knobs — placed only when visible (no gaps). Both can show
+        // at once for an XY shotgun pair (splay + array facing).
+        auto knobCol = [&mr] (juce::Label& l, juce::Slider& s, int labelW)
+        {
+            if (! s.isVisible()) return;
+            l.setBounds (mr.removeFromLeft (labelW).withTrimmedTop (8));
+            s.setBounds (mr.removeFromLeft (52));
+            mr.removeFromLeft (12);
+        };
+        knobCol (xyAngleLabel, xyAngleSlider, 60);
+        knobCol (rotateLabel,  rotateSlider,  64);
+    }
+
+    // Sidebar + (edit-mode panels) + room view fill the rest.
     auto content = area.reduced (12, 8);
     const int sidebarW = presetBrowser.isCollapsed() ? 32 : 200;
     presetBrowser.setBounds (content.removeFromLeft (sidebarW));
     content.removeFromLeft (12);
-    roomView.setBounds (content);
+
+    if (editMode)
+    {
+        // Right-anchored inspector, top tool palette, bottom status bar; the room
+        // view fills the remaining centre rectangle. At the 900 px default this
+        // leaves the room view ~370 px wide — tight but usable; the window resizes.
+        const int inspectorW = 260;
+        inspector.setBounds (content.removeFromRight (inspectorW));
+        content.removeFromRight (8);
+        editorTools.setBounds (content.removeFromTop (32));
+        statusBar.setBounds   (content.removeFromBottom (24));
+        roomView.setBounds (content);
+    }
+    else
+    {
+        roomView.setBounds (content);
+    }
 }

@@ -22,8 +22,26 @@ cmake-build-*/
 .idea/
 *.user
 
-# Claude Code local state
+# AI/agent + internal artifacts — Diversion-only, never on the git mirror.
+# (Git holds only what's needed to build + use the product; see CLAUDE.md > Version Control.)
 .claude/
+.remember/
+CLAUDE.md
+
+# Diversion VCS local state / config (Diversion is the primary VCS; git mirrors)
+.diversion/
+.dvignore
+
+# Internal dev/design docs — Diversion-only. Git keeps only build files + README +
+# LICENSE (+ the README's screenshot under Docs/images/). See CLAUDE.md > Version Control.
+/TODO.md
+/CONTRIBUTING.md
+/Docs/architecture.md
+/Docs/wzpreset_format.md
+/Docs/materials_reference.md
+/Docs/contributing_recordings.md
+/Docs/JUCE_VST3_BEST_PRACTICES.md
+/Docs/JUCE_VST3_UI_UX_BEST_PRACTICES.md
 
 # Generated preset bundles + embed blobs (regenerate with BakePresets).
 # The committed Resources/Presets/default_ir.wav cold-start bootstrap is kept.

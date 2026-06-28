@@ -37,6 +37,12 @@ public:
 
     std::function<void (const juce::String& presetId)> onPresetSelected;
     std::function<void()> onCollapseChanged;
+    /** Fired by the "+ Save As" button (Slice 6a). The editor shows the dialog and
+        invokes the processor's save flow. */
+    std::function<void()> onSaveAsRequested;
+
+    /** External rescan trigger (e.g. after the processor saves a new preset). */
+    void refreshList() { rebuildList(); }
 
     juce::String getSelectedPresetId() const { return selectedPresetId; }
     void setSelectedPresetId (const juce::String& presetId);

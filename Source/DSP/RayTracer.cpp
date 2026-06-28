@@ -33,35 +33,66 @@ namespace
 
 RayTracer::Result RayTracer::trace (const Scene& scene, const Settings& settings, int sampleRate) const
 {
+    const auto& source   = scene.getSource();
+    const auto& micArray = scene.getMicArray();
+    const int   numMics  = micArray.getNumMics();
+
     Result result;
     result.sampleRate = sampleRate;
     result.numBins    = (int) std::ceil (settings.maxTraceTimeSeconds * (float) sampleRate);
     result.numRays    = settings.numRays;
-    result.micRadius  = scene.getMic().getRadius();
+    result.micRadius  = micArray.getPrimary().getRadius();
 
-    for (auto& band : result.histogram)
-        band.assign ((size_t) result.numBins, 0.0f);
-
-    // === Direct sound (deterministic) ===
-    const Vec3 sourcePos = scene.getSource().getPosition();
-    const Vec3 micPos    = scene.getMic().getPosition();
-    const Vec3 toMic     = micPos - sourcePos;
-    const float directDist = toMic.length();
-
-    result.directDistance    = directDist;
-    result.directArrivalTime = directDist / settings.speedOfSound;
-
-    if (directDist > 1.0e-6f)
+    result.histogramsPerMic.resize ((size_t) numMics);
+    result.directPerMic.assign ((size_t) numMics, Result::DirectInfo {});
+    result.hitCountPerMic.assign ((size_t) numMics, 0);
+    result.micPositions.resize ((size_t) numMics);
+    for (int m = 0; m < numMics; ++m)
     {
-        const Vec3 dir = toMic / directDist;
-        int bi; float t; Vec3 hp, n; Brush::Face face;
-        const bool occluded = scene.intersect (sourcePos, dir, kRayEpsilon, bi, t, hp, n, face)
-                                && t < directDist - scene.getMic().getRadius();
-        result.directVisible = ! occluded;
+        result.micPositions[(size_t) m] = micArray.getMic (m).getPosition();
+        result.anyMicDirectional = result.anyMicDirectional || micArray.getMic (m).isDirectional();
     }
-    else
+    for (auto& mh : result.histogramsPerMic)
+        for (auto& band : mh)
+            band.assign ((size_t) result.numBins, 0.0f);
+
+    // Snapshot the brush list ONCE (manual + compiled sectors). All bounce intersections
+    // iterate this local vector — re-compiling per ray would be needlessly expensive.
+    const auto brushList = scene.getAllBrushesForTracing();
+
+    // === Direct sound, per mic (deterministic) ===
+    const Vec3 sourcePos = source.getPosition();
+    for (int m = 0; m < numMics; ++m)
     {
-        result.directVisible = true;
+        const auto& mic    = micArray.getMic (m);
+        const Vec3  micPos = mic.getPosition();
+        const Vec3  toMic  = micPos - sourcePos;
+        const float dist   = toMic.length();
+
+        auto& di = result.directPerMic[(size_t) m];
+        di.distance    = dist;
+        di.arrivalTime = dist / settings.speedOfSound;
+
+        if (dist > 1.0e-6f)
+        {
+            const Vec3 dir = toMic / dist;
+            int bi; float t; Vec3 hp, n; Brush::Face face;
+            const bool occluded = Scene::intersectBrushList (brushList, sourcePos, dir, kRayEpsilon, bi, t, hp, n, face)
+                                    && t < dist - mic.getRadius();
+            di.visible = ! occluded;
+
+            // Incoming direction at the mic = from mic toward the source. Source
+            // emission direction = from source toward the mic. Both 1.0 for omni.
+            const Vec3  incoming = (sourcePos - micPos) / dist;
+            const float micGain  = mic.getReceptionGain (incoming);
+            const float srcGain  = source.getEmissionGain (toMic / dist);
+            di.receptionGain     = micGain * srcGain;
+        }
+        else
+        {
+            di.visible = true;
+            di.receptionGain = 1.0f;
+        }
     }
 
     // === Stochastic reflections ===
@@ -69,27 +100,32 @@ RayTracer::Result RayTracer::trace (const Scene& scene, const Settings& settings
 
     for (int i = 0; i < settings.numRays; ++i)
     {
-        const Vec3 dir = scene.getSource().sampleEmissionDirection (random);
-        traceRay (scene, sourcePos, dir, settings, result, random);
+        const Vec3  dir      = source.sampleEmissionDirection (random);
+        const float emitGain = source.getEmissionGain (dir);
+        traceRay (brushList, micArray, sourcePos, dir, emitGain, settings, result, random);
     }
 
     return result;
 }
 
-void RayTracer::traceRay (const Scene& scene,
+void RayTracer::traceRay (const std::vector<Brush>& brushList,
+                          const MicArray& micArray,
                           Vec3 origin,
                           Vec3 direction,
+                          float emissionGain,
                           const Settings& settings,
                           Result& result,
                           juce::Random& random) const
 {
-    const float c       = settings.speedOfSound;
-    const float maxDist = settings.maxTraceTimeSeconds * c;
-    const int   sr      = result.sampleRate;
-    const MicNode& mic  = scene.getMic();
+    const float c        = settings.speedOfSound;
+    const float maxDist  = settings.maxTraceTimeSeconds * c;
+    const int   sr       = result.sampleRate;
+    const int   numMics  = micArray.getNumMics();
 
+    // Initial ray energy weighted by the source's emission pattern (energy domain =
+    // amplitude^2). Omni => emissionGain == 1.0 => energy 1.0 (Slice 4.5 behaviour).
     std::array<float, Material::kNumBands> energy;
-    energy.fill (1.0f);
+    energy.fill (emissionGain * emissionGain);
 
     Vec3 o = origin;
     Vec3 d = direction.normalised();
@@ -98,7 +134,7 @@ void RayTracer::traceRay (const Scene& scene,
     for (int bounce = 0; bounce <= settings.maxBounces; ++bounce)
     {
         int bi; float tSurf; Vec3 hp, n; Brush::Face face;
-        const bool hitSurface = scene.intersect (o, d, kRayEpsilon, bi, tSurf, hp, n, face);
+        const bool hitSurface = Scene::intersectBrushList (brushList, o, d, kRayEpsilon, bi, tSurf, hp, n, face);
 
         const float remaining = maxDist - accumDist;
         if (remaining <= 0.0f)
@@ -106,25 +142,38 @@ void RayTracer::traceRay (const Scene& scene,
 
         const float segMax = hitSurface ? juce::jmin (tSurf, remaining) : remaining;
 
-        // Deposit a mic hit on this segment — but only from the first reflection onward
-        // (bounce 0 is the unreflected, direct path, handled separately in trace()).
+        // Deposit a mic hit on this segment for each mic in the array — but only from
+        // the first reflection onward (bounce 0 is the direct path, handled in trace()).
         if (bounce >= 1)
         {
-            float micT;
-            if (mic.intersectRay (o, d, segMax, micT))
+            // Incoming direction at the mic = from the mic looking back along the ray
+            // = negation of the ray's travel direction (d is already unit).
+            const Vec3 incoming = -d;
+
+            for (int m = 0; m < numMics; ++m)
             {
-                const float arrivalTime = (accumDist + micT) / c;
-                const int   bin = (int) std::lround (arrivalTime * (float) sr);
-
-                if (bin >= 0 && bin < result.numBins)
+                const auto& mic = micArray.getMic (m);
+                float micT;
+                if (mic.intersectRay (o, d, segMax, micT))
                 {
-                    for (int b = 0; b < Material::kNumBands; ++b)
-                        result.histogram[(size_t) b][(size_t) bin] += energy[(size_t) b];
+                    const float arrivalTime = (accumDist + micT) / c;
+                    const int   bin = (int) std::lround (arrivalTime * (float) sr);
 
-                    ++result.hitCount;
+                    if (bin >= 0 && bin < result.numBins)
+                    {
+                        // Reception pattern weights energy (amplitude^2). Omni => 1.0.
+                        const float recGain   = mic.getReceptionGain (incoming);
+                        const float recGainSq = recGain * recGain;
+
+                        auto& hist = result.histogramsPerMic[(size_t) m];
+                        for (int b = 0; b < Material::kNumBands; ++b)
+                            hist[(size_t) b][(size_t) bin] += energy[(size_t) b] * recGainSq;
+
+                        ++result.hitCountPerMic[(size_t) m];
+                    }
                 }
             }
-            // The ray continues past the mic (mics receive, they do not absorb).
+            // The ray continues past the mic(s) (mics receive, they do not absorb).
         }
 
         if (! hitSurface)
@@ -135,7 +184,7 @@ void RayTracer::traceRay (const Scene& scene,
             break;
 
         // Absorption at the surface.
-        const Material& material = scene.getBrushes()[(size_t) bi].getFaceMaterial (face);
+        const Material& material = brushList[(size_t) bi].getFaceMaterial (face);
         const auto reflection = material.getReflection();
 
         float maxEnergy = 0.0f;

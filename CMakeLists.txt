@@ -20,7 +20,7 @@ set(PLUGIN_FORMATS VST3 Standalone)
 juce_add_plugin(Worldizer
     # === COMPANY INFO ===
     COMPANY_NAME "ZQSFX"
-    COMPANY_WEBSITE "https://github.com/zqsfx/worldizer"
+    COMPANY_WEBSITE "https://github.com/themightyzq/worldizer"
     COMPANY_EMAIL "connect@zq-sfx.com"
 
     # === UNIQUE IDENTIFIERS (locked in — see Source/Shared/Constants.h) ===
@@ -80,12 +80,20 @@ target_sources(Worldizer
         Source/Model/MaterialResolver.cpp
         Source/Model/MicNode.h
         Source/Model/MicNode.cpp
+        Source/Model/MicArray.h
+        Source/Model/MicArray.cpp
         Source/Model/Scene.h
         Source/Model/Scene.cpp
         Source/Model/SourceNode.h
         Source/Model/SourceNode.cpp
         Source/Model/TestScenes.h
         Source/Model/TestScenes.cpp
+        Source/Model/Vertex.h
+        Source/Model/LineDef.h
+        Source/Model/Sector.h
+        Source/Model/Sector.cpp
+        Source/Model/SectorGeometry.h
+        Source/Model/SectorGeometry.cpp
 
         # --- DSP (engine: RayTracer/IRBuilder/AirAbsorption implemented; rest stubs) ---
         Source/DSP/AirAbsorption.h
@@ -103,7 +111,6 @@ target_sources(Worldizer
         Source/DSP/SourceCharacter.h
 
         # --- IO ---
-        Source/IO/MapImporter.h
         Source/IO/WzPresetIO.h
         Source/IO/WzPresetIO.cpp
 
@@ -112,6 +119,12 @@ target_sources(Worldizer
         Source/UI/PresetBrowser.cpp
         Source/UI/RoomView2D.h
         Source/UI/RoomView2D.cpp
+        Source/UI/EditorToolPalette.h
+        Source/UI/EditorToolPalette.cpp
+        Source/UI/InspectorPanel.h
+        Source/UI/InspectorPanel.cpp
+        Source/UI/DrawingState.h
+        Source/UI/UndoStack.h
 )
 
 target_include_directories(Worldizer
@@ -180,10 +193,13 @@ target_sources(BakePresets
     PRIVATE
         Tools/bake_presets/bake_presets.cpp
         Source/Model/Material.cpp
-        Source/Model/MaterialResolver.cpp
         Source/Model/Brush.cpp
         Source/Model/SourceNode.cpp
         Source/Model/MicNode.cpp
+        Source/Model/MicArray.cpp
+        Source/Model/Sector.cpp
+        Source/Model/SectorGeometry.cpp
+        Source/Model/MaterialResolver.cpp
         Source/Model/Scene.cpp
         Source/Model/TestScenes.cpp
         Source/DSP/RayTracer.cpp
@@ -225,6 +241,10 @@ target_sources(RenderTestScene
         Source/Model/Brush.cpp
         Source/Model/SourceNode.cpp
         Source/Model/MicNode.cpp
+        Source/Model/MicArray.cpp
+        Source/Model/Sector.cpp
+        Source/Model/SectorGeometry.cpp
+        Source/Model/MaterialResolver.cpp
         Source/Model/Scene.cpp
         Source/Model/TestScenes.cpp
         Source/DSP/RayTracer.cpp
@@ -258,6 +278,10 @@ target_sources(MicMoveTest
         Source/Model/Brush.cpp
         Source/Model/SourceNode.cpp
         Source/Model/MicNode.cpp
+        Source/Model/MicArray.cpp
+        Source/Model/Sector.cpp
+        Source/Model/SectorGeometry.cpp
+        Source/Model/MaterialResolver.cpp
         Source/Model/Scene.cpp
         Source/Model/TestScenes.cpp
         Source/DSP/RayTracer.cpp
@@ -299,6 +323,10 @@ target_sources(IRInspect
         Source/Model/Brush.cpp
         Source/Model/SourceNode.cpp
         Source/Model/MicNode.cpp
+        Source/Model/MicArray.cpp
+        Source/Model/Sector.cpp
+        Source/Model/SectorGeometry.cpp
+        Source/Model/MaterialResolver.cpp
         Source/Model/Scene.cpp
         Source/Model/TestScenes.cpp
         Source/DSP/RayTracer.cpp
@@ -315,3 +343,129 @@ target_link_libraries(IRInspect
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags
 )
+
+# === Slice 5: directional mic pattern verification ===
+juce_add_console_app(DirectionalityTest PRODUCT_NAME "DirectionalityTest")
+juce_generate_juce_header(DirectionalityTest)
+target_sources(DirectionalityTest
+    PRIVATE
+        Tests/directionality_test.cpp
+        Source/Model/Material.cpp
+        Source/Model/Brush.cpp
+        Source/Model/SourceNode.cpp
+        Source/Model/MicNode.cpp
+        Source/Model/MicArray.cpp
+        Source/Model/Sector.cpp
+        Source/Model/SectorGeometry.cpp
+        Source/Model/MaterialResolver.cpp
+        Source/Model/Scene.cpp
+        Source/Model/TestScenes.cpp
+        Source/DSP/RayTracer.cpp
+        Source/DSP/IRBuilder.cpp
+        Source/DSP/AirAbsorption.cpp
+)
+target_compile_definitions(DirectionalityTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(DirectionalityTest
+    PRIVATE
+        juce::juce_audio_formats
+        juce::juce_audio_basics
+        juce::juce_core
+        juce::juce_dsp
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
+# === Slice 6a: sector geometry compiler verification ===
+juce_add_console_app(SectorCompilerTest PRODUCT_NAME "SectorCompilerTest")
+juce_generate_juce_header(SectorCompilerTest)
+target_sources(SectorCompilerTest
+    PRIVATE
+        Tests/sector_compiler_test.cpp
+        Source/Model/Material.cpp
+        Source/Model/Brush.cpp
+        Source/Model/SourceNode.cpp
+        Source/Model/MicNode.cpp
+        Source/Model/MicArray.cpp
+        Source/Model/Sector.cpp
+        Source/Model/SectorGeometry.cpp
+        Source/Model/MaterialResolver.cpp
+        Source/Model/Scene.cpp
+        Source/Model/TestScenes.cpp
+        Source/DSP/RayTracer.cpp
+        Source/DSP/IRBuilder.cpp
+        Source/DSP/AirAbsorption.cpp
+)
+target_compile_definitions(SectorCompilerTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(SectorCompilerTest
+    PRIVATE
+        juce::juce_audio_formats
+        juce::juce_audio_basics
+        juce::juce_core
+        juce::juce_dsp
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
+# === Slice 6a: oriented-wall intersection regression ===
+juce_add_console_app(OrientedWallIntersectionTest PRODUCT_NAME "OrientedWallIntersectionTest")
+juce_generate_juce_header(OrientedWallIntersectionTest)
+target_sources(OrientedWallIntersectionTest
+    PRIVATE
+        Tests/oriented_wall_intersection_test.cpp
+        Source/Model/Material.cpp
+        Source/Model/Brush.cpp
+)
+target_compile_definitions(OrientedWallIntersectionTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(OrientedWallIntersectionTest
+    PRIVATE
+        juce::juce_core
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
+# === Slice 5: stereo / multi-mic IR verification ===
+juce_add_console_app(StereoIRTest PRODUCT_NAME "StereoIRTest")
+juce_generate_juce_header(StereoIRTest)
+target_sources(StereoIRTest
+    PRIVATE
+        Tests/stereo_ir_test.cpp
+        Source/Model/Material.cpp
+        Source/Model/Brush.cpp
+        Source/Model/SourceNode.cpp
+        Source/Model/MicNode.cpp
+        Source/Model/MicArray.cpp
+        Source/Model/Sector.cpp
+        Source/Model/SectorGeometry.cpp
+        Source/Model/MaterialResolver.cpp
+        Source/Model/Scene.cpp
+        Source/Model/TestScenes.cpp
+        Source/DSP/RayTracer.cpp
+        Source/DSP/IRBuilder.cpp
+        Source/DSP/AirAbsorption.cpp
+)
+target_compile_definitions(StereoIRTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(StereoIRTest
+    PRIVATE
+        juce::juce_audio_formats
+        juce::juce_audio_basics
+        juce::juce_core
+        juce::juce_dsp
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
+# === Test registration (CTest) ===
+# Wire the assertion-based console tests into CTest so `ctest` (locally and in CI)
+# runs them. Each returns 0 on pass / nonzero on fail (e.g. `return ok ? 0 : 1`).
+# RenderTestScene / IRInspect / BakePresets are tools, not pass/fail tests, so they
+# are intentionally excluded. Run locally with: ctest --test-dir build -C Release
+enable_testing()
+foreach(wz_test
+        OrientedWallIntersectionTest
+        SectorCompilerTest
+        DistanceTest
+        MicMoveTest
+        DirectionalityTest
+        StereoIRTest)
+    add_test(NAME ${wz_test} COMMAND ${wz_test})
+endforeach()

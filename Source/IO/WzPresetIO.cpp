@@ -20,14 +20,56 @@ namespace
             return { (float) (double) v[0], (float) (double) v[1], (float) (double) v[2] };
         return {};
     }
+
+    // === Pattern / configuration <-> string (geometry v2) ===
+    const char* sourcePatternToStr (SourcePattern) { return "omnidirectional"; } // only one for MVP
+
+    SourcePattern sourcePatternFromStr (const juce::String&) { return SourcePattern::Omnidirectional; }
+
+    const char* micPatternToStr (MicPattern p)
+    {
+        return p == MicPattern::Shotgun ? "shotgun" : "omnidirectional";
+    }
+
+    MicPattern micPatternFromStr (const juce::String& s)
+    {
+        return s == "shotgun" ? MicPattern::Shotgun : MicPattern::Omnidirectional;
+    }
+
+    const char* micConfigToStr (MicArray::Configuration c)
+    {
+        switch (c)
+        {
+            case MicArray::Configuration::StereoXY:   return "stereo_xy";
+            case MicArray::Configuration::SpacedPair: return "spaced_pair";
+            case MicArray::Configuration::Single:
+            default:                                  return "single";
+        }
+    }
+
+    MicArray::Configuration micConfigFromStr (const juce::String& s)
+    {
+        if (s == "stereo_xy")   return MicArray::Configuration::StereoXY;
+        if (s == "spaced_pair") return MicArray::Configuration::SpacedPair;
+        return MicArray::Configuration::Single;
+    }
+
+    juce::var micToJson (const MicNode& mic)
+    {
+        auto* o = new juce::DynamicObject();
+        o->setProperty ("position",    vec3ToJson (mic.getPosition()));
+        o->setProperty ("orientation", vec3ToJson (mic.getOrientation()));
+        o->setProperty ("radius",      (double) mic.getRadius());
+        return juce::var (o);
+    }
 }
 
 //==============================================================================
 juce::var WzPresetIO::sceneToJson (const Scene& scene)
 {
     auto* root = new juce::DynamicObject();
-    root->setProperty ("$schema", "worldizer-geometry-v1");
-    root->setProperty ("version", 1);
+    root->setProperty ("$schema", "worldizer-geometry-v3");
+    root->setProperty ("version", 3);
 
     const auto bounds = scene.getBounds();
     auto* b = new juce::DynamicObject();
@@ -35,9 +77,14 @@ juce::var WzPresetIO::sceneToJson (const Scene& scene)
     b->setProperty ("max", vec3ToJson (bounds.second));
     root->setProperty ("bounds", juce::var (b));
 
-    juce::Array<juce::var> brushes;
+    // Manual / legacy brushes (Test scenes, anything not user-authored via sectors).
+    // Only the original Box type is serialised here — OrientedWalls only exist as the
+    // compiled output of sector geometry and round-trip via `sector_geometry` below.
+    juce::Array<juce::var> brushesArr;
     for (const auto& br : scene.getBrushes())
     {
+        if (br.getType() != Brush::Type::Box)
+            continue;
         auto* bo = new juce::DynamicObject();
         bo->setProperty ("id", br.getId());
         bo->setProperty ("kind", br.getKind() == Brush::Kind::Additive ? "additive" : "subtractive");
@@ -45,18 +92,34 @@ juce::var WzPresetIO::sceneToJson (const Scene& scene)
         bo->setProperty ("min", vec3ToJson (br.getMin()));
         bo->setProperty ("max", vec3ToJson (br.getMax()));
         bo->setProperty ("material", br.getFaceMaterial (Brush::Face::NegX).getName());
-        brushes.add (juce::var (bo));
+        brushesArr.add (juce::var (bo));
     }
-    root->setProperty ("brushes", brushes);
+    root->setProperty ("brushes", brushesArr);
 
+    // Sector geometry (v3): the user-authored path. Empty for legacy presets.
+    root->setProperty ("sector_geometry", scene.getSectorGeometry().toJson());
+
+    // source_default (v2: + orientation + pattern).
+    const auto& source = scene.getSource();
     auto* src = new juce::DynamicObject();
-    src->setProperty ("position", vec3ToJson (scene.getSource().getPosition()));
+    src->setProperty ("position",    vec3ToJson (source.getPosition()));
+    src->setProperty ("orientation", vec3ToJson (source.getOrientation()));
+    src->setProperty ("pattern",     sourcePatternToStr (source.getPattern()));
     root->setProperty ("source_default", juce::var (src));
 
-    auto* mic = new juce::DynamicObject();
-    mic->setProperty ("position", vec3ToJson (scene.getMic().getPosition()));
-    mic->setProperty ("radius", (double) scene.getMic().getRadius());
-    root->setProperty ("mic_default", juce::var (mic));
+    // mic_array_default (v2: configuration + uniform pattern + per-mic + XY angle).
+    const auto& arr = scene.getMicArray();
+    auto* micArr = new juce::DynamicObject();
+    micArr->setProperty ("configuration",    micConfigToStr (arr.getConfiguration()));
+    micArr->setProperty ("pattern",          micPatternToStr (arr.getPattern()));
+    micArr->setProperty ("xy_angle_degrees", (double) arr.getXYAngleDegrees());
+    micArr->setProperty ("xy_orientation",   vec3ToJson (arr.getXYOrientation()));
+
+    juce::Array<juce::var> mics;
+    for (int m = 0; m < arr.getNumMics(); ++m)
+        mics.add (micToJson (arr.getMic (m)));
+    micArr->setProperty ("mics", mics);
+    root->setProperty ("mic_array_default", juce::var (micArr));
 
     return juce::var (root);
 }
@@ -70,34 +133,101 @@ Scene WzPresetIO::sceneFromJson (const juce::var& v, juce::String& errorOut)
         return scene;
     }
 
-    auto* brushes = v["brushes"].getArray();
-    if (brushes == nullptr)
+    // Legacy / Test-preset brushes (v1+). A v3 preset may omit `brushes` entirely if
+    // it's pure-sector — accept that. (v1/v2 always had a brushes array.)
+    if (auto* brushArr = v["brushes"].getArray())
     {
-        errorOut = "geometry.json: missing 'brushes' array";
-        return scene;
+        for (auto& bv : *brushArr)
+        {
+            const juce::String id    = bv["id"].toString();
+            const juce::String kindS = bv["kind"].toString();
+            const auto kind = (kindS == "subtractive") ? Brush::Kind::Subtractive : Brush::Kind::Additive;
+
+            Brush brush (id, vec3FromJson (bv["min"]), vec3FromJson (bv["max"]), kind);
+            brush.setAllFaceMaterials (MaterialResolver::resolve (bv["material"].toString()));
+            scene.addBrush (std::move (brush));
+        }
     }
 
-    for (auto& bv : *brushes)
+    // Sector geometry (v3+). Missing => empty (legacy preset path).
+    if (v.hasProperty ("sector_geometry"))
     {
-        const juce::String id    = bv["id"].toString();
-        const juce::String kindS = bv["kind"].toString();
-        const auto kind = (kindS == "subtractive") ? Brush::Kind::Subtractive : Brush::Kind::Additive;
-
-        Brush brush (id, vec3FromJson (bv["min"]), vec3FromJson (bv["max"]), kind);
-        brush.setAllFaceMaterials (MaterialResolver::resolve (bv["material"].toString()));
-        scene.addBrush (std::move (brush));
+        juce::String sErr;
+        scene.getSectorGeometry().fromJson (v["sector_geometry"], sErr);
+        // (fromJson never fails today — a missing/empty block is valid.)
     }
 
+    // --- Source (v2 adds orientation + pattern; v1 only had position) ---
     const auto src = v["source_default"];
     if (src.isObject())
-        scene.getSource().setPosition (vec3FromJson (src["position"]));
-
-    const auto mic = v["mic_default"];
-    if (mic.isObject())
     {
-        scene.getMic().setPosition (vec3FromJson (mic["position"]));
-        if (mic.hasProperty ("radius"))
-            scene.getMic().setRadius ((float) (double) mic["radius"]);
+        scene.getSource().setPosition (vec3FromJson (src["position"]));
+        if (src.hasProperty ("orientation"))
+            scene.getSource().setOrientation (vec3FromJson (src["orientation"]));
+        if (src["pattern"].isString())
+            scene.getSource().setPattern (sourcePatternFromStr (src["pattern"].toString()));
+    }
+
+    // --- Mic array: v2 has "mic_array_default"; v1 had a single "mic_default" ---
+    auto& arr = scene.getMicArray();
+    const auto micArr = v["mic_array_default"];
+    if (micArr.isObject())
+    {
+        // v2.
+        const auto config  = micConfigFromStr (micArr["configuration"].toString());
+        const auto pattern = micPatternFromStr (micArr["pattern"].toString());
+
+        auto* mics = micArr["mics"].getArray();
+        auto readMic = [&] (int idx, MicNode& dest)
+        {
+            if (mics != nullptr && idx < mics->size())
+            {
+                const auto& mv = (*mics)[idx];
+                dest.setPosition (vec3FromJson (mv["position"]));
+                if (mv.hasProperty ("orientation")) dest.setOrientation (vec3FromJson (mv["orientation"]));
+                if (mv.hasProperty ("radius"))      dest.setRadius ((float) (double) mv["radius"]);
+            }
+        };
+
+        arr.setConfiguration (config);
+        switch (config)
+        {
+            case MicArray::Configuration::Single:
+                readMic (0, arr.getMic (0));
+                break;
+
+            case MicArray::Configuration::StereoXY:
+            {
+                if (micArr.hasProperty ("xy_angle_degrees"))
+                    arr.setXYAngleDegrees ((float) (double) micArr["xy_angle_degrees"]);
+                // Coincident: take position from mic 0; facing from xy_orientation
+                // (orientations are derived from facing + splay).
+                if (mics != nullptr && mics->size() > 0)
+                    arr.setXYPosition (vec3FromJson ((*mics)[0]["position"]));
+                if (micArr.hasProperty ("xy_orientation"))
+                    arr.setXYOrientation (vec3FromJson (micArr["xy_orientation"]));
+                break;
+            }
+
+            case MicArray::Configuration::SpacedPair:
+                readMic (0, arr.getMic (0));
+                readMic (1, arr.getMic (1));
+                break;
+        }
+        arr.setAllPatterns (pattern);
+    }
+    else
+    {
+        // v1 migration: a single, omnidirectional mic.
+        const auto mic = v["mic_default"];
+        arr.setConfiguration (MicArray::Configuration::Single);
+        arr.setAllPatterns (MicPattern::Omnidirectional);
+        if (mic.isObject())
+        {
+            arr.getMic (0).setPosition (vec3FromJson (mic["position"]));
+            if (mic.hasProperty ("radius"))
+                arr.getMic (0).setRadius ((float) (double) mic["radius"]);
+        }
     }
 
     errorOut.clear();

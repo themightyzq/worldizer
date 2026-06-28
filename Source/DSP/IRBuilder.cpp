@@ -2,6 +2,7 @@
 #include "AirAbsorption.h"
 #include <cmath>
 #include <vector>
+#include <limits>
 
 namespace Worldizer
 {
@@ -14,17 +15,10 @@ namespace
     // Per-section Q for the octave bandpass. Two identical sections are cascaded
     // (=> 24 dB/oct skirts); Q ~= 0.9 puts the cascade's -3 dB points at the octave
     // edges, so adjacent bands cross near -3 dB and the summed magnitude stays
-    // roughly flat. Steeper skirts keep each band's air-absorption decay independent,
-    // so the tail darkens naturally (HF dies away before LF).
+    // roughly flat. Steeper skirts keep each band's air-absorption decay independent.
     constexpr float kOctaveQ = 0.9f;
 
-    // Crossfade from ray-traced to synthesised tail starts at this multiple of the
-    // estimated RT60. The dense, reliable early/mid reflections (up to ~1x RT60) are
-    // kept; the sparse, statistically-thin late portion beyond it is replaced by a
-    // smooth synthesised decay. (Deviation from the slice prompt's 1.5x: our test
-    // scenes' RT60s fit inside the 4 s trace, so 1.5x would leave almost the whole
-    // sparse tail in place. 1.0x hands the unreliable tail to synthesis — the actual
-    // Slice 1 defect being fixed. Tunable; see Slice 4.5 retrospective.)
+    // Crossfade from ray-traced to synthesised tail starts at this multiple of RT60.
     constexpr float kCrossfadeRT60Factor = 1.0f;
 
     constexpr float kSpeedOfSound = 343.0f; // matches RayTracer::Settings::speedOfSound
@@ -52,8 +46,7 @@ namespace
     }
 
     // Least-squares slope (dB per second) of a per-sample energy array over
-    // [fromBin, toBin), aggregated into ~20 ms blocks in the log domain. Returns
-    // false if there is too little non-silent data to fit.
+    // [fromBin, toBin), aggregated into ~20 ms blocks in the log domain.
     bool fitDecaySlope (const std::vector<float>& energy, int fromBin, int toBin,
                         int sr, float& slopeDbPerSecOut)
     {
@@ -89,45 +82,44 @@ namespace
     }
 }
 
-juce::AudioBuffer<float> IRBuilder::build (const RayTracer::Result& tr,
-                                           const Settings& settings) const
+//==============================================================================
+IRBuilder::ChannelBuild IRBuilder::buildChannel (
+    const std::array<std::vector<float>, Material::kNumBands>& histogram,
+    const RayTracer::Result::DirectInfo& direct,
+    int refOffset, int numBins, int numRaysIn, float micRadiusIn,
+    const Settings& settings, int sr,
+    int noiseSeed, int tailSeed) const
 {
-    const int   sr      = tr.sampleRate;
+    ChannelBuild cb;
+
     constexpr float c   = kSpeedOfSound;
-    const int   numRays = juce::jmax (1, tr.numRays);
-    const int   numBins = juce::jmax (1, tr.numBins);
+    const int   numRays = juce::jmax (1, numRaysIn);
 
     // Calibrate reverb energy to the direct sound's scale (mic capture cross-section
     // => amplitude micRadius/(2*dist), so energy factor (2/micRadius)^2 / numRays).
-    const float micR      = juce::jmax (0.01f, tr.micRadius);
+    const float micR      = juce::jmax (0.01f, micRadiusIn);
     const float energyCal = (4.0f / (micR * micR)) / (float) numRays;
 
-    // The room response is stored RELATIVE to the direct sound: the direct sits at
-    // sample 0, and a reflection arriving at absolute time t lands at output bin
-    // (t - directOffset). All reflection paths are longer than the direct, so these
-    // are >= 0. Air absorption still uses ABSOLUTE path length (longer paths darker).
-    const int directOffset = juce::jmax (0, (int) std::lround (tr.directArrivalTime * (float) sr));
-    const int tracedOutputLen = juce::jlimit (1, settings.maxLengthSamples, numBins - directOffset);
+    // Output sample 0 corresponds to absolute time refOffset/sr (shared across all
+    // channels). A reflection at absolute bin b lands at output bin (b - refOffset);
+    // this channel's direct lands at (its arrival - refOffset). Air absorption still
+    // uses ABSOLUTE path length (= (k + refOffset)/sr * c).
+    const int tracedOutputLen = juce::jlimit (1, settings.maxLengthSamples, numBins - refOffset);
 
-    // Envelope smoothing: a centred moving average whose window GROWS with time.
-    // Early reflections keep their detail (short window); the sparse, diffuse late
-    // tail must be smoothed HEAVILY or the gaps between sparse ray hits modulate the
-    // noise carrier and the tail "pumps" (Slice 4.5 follow-up — the old 0.025*t growth
-    // / 100 ms cap was far too narrow for hit-starved scenes like the gym). Grows to a
-    // ~400 ms window late, which averages tens of hits into a continuous decay.
+    // Envelope smoothing window grows with time (early detail, heavily-smoothed sparse
+    // late tail to avoid pumping). See Slice 4.5 notes.
+    const float smoothScale = juce::jmax (1.0f, settings.envelopeSmoothingScale);
     const int   halfMin = juce::jmax (1, (int) std::round (settings.envelopeMs * 0.001f * (float) sr) / 2);
-    const int   halfMax = juce::jmax (halfMin, (int) (0.2f * (float) sr)); // up to ~400 ms window
-    const float halfGrowth = 0.09f;
+    const int   halfMax = juce::jmax (halfMin, (int) (0.2f * smoothScale * (float) sr)); // up to ~400 ms (omni)
+    const float halfGrowth = 0.09f * smoothScale;
 
-    // PASS 1 — build the ray-traced IR (in output/relative time) and keep per-band
-    // energy (output frame) for late-tail decay measurement.
     std::vector<float> rayIR ((size_t) tracedOutputLen, 0.0f);
     std::array<std::vector<float>, Material::kNumBands> bandEnergy;
     std::vector<float> broadbandEnergy ((size_t) tracedOutputLen, 0.0f);
 
     std::vector<float>  bandNoise ((size_t) tracedOutputLen);
     std::vector<double> prefix    ((size_t) tracedOutputLen + 1);
-    juce::Random rng (20240517);
+    juce::Random rng (noiseSeed);
 
     for (int b = 0; b < Material::kNumBands; ++b)
     {
@@ -138,11 +130,11 @@ juce::AudioBuffer<float> IRBuilder::build (const RayTracer::Result& tr,
         prefix[0] = 0.0;
         for (int k = 0; k < tracedOutputLen; ++k)
         {
-            const int histBin = k + directOffset; // absolute arrival bin
+            const int histBin = k + refOffset; // absolute arrival bin
             float e = 0.0f;
             if (histBin >= 0 && histBin < numBins)
             {
-                e = tr.histogram[(size_t) b][(size_t) histBin] * energyCal;
+                e = histogram[(size_t) b][(size_t) histBin] * energyCal;
                 if (settings.applyAirAbsorption)
                 {
                     const float dist = (float) histBin / (float) sr * c; // ABSOLUTE path length
@@ -177,18 +169,17 @@ juce::AudioBuffer<float> IRBuilder::build (const RayTracer::Result& tr,
         }
     }
 
-    // Direct sound at sample 0 (timing is relative to the direct, so it's always
-    // sample 0). Amplitude keeps its 1/distance scaling RELATIVE to the reflections
-    // — that ratio IS the direct-to-reverberant cue (cue #3) and is distance-
-    // dependent (far mic => weaker direct => more reverb). The whole IR is peak-
-    // normalised afterwards (removing absolute level, which DistanceModel re-applies),
-    // so what survives here is the *ratio*, not the absolute direct level. (A flat
-    // unit direct would bury the reverb by ~20 dB in a large room — see Slice 4.5
-    // follow-up.) Air absorption darkens the direct over its own path length.
-    if (settings.includeDirect && tr.directVisible)
+    // Direct sound. Timing is relative to the SHARED reference, so this channel's
+    // direct lands at (its arrival - refOffset) — 0 for the nearest mic, a few samples
+    // later for a farther one (the spaced-pair inter-channel time difference). Its
+    // amplitude keeps 1/distance scaling relative to the reflections, times the mic's
+    // reception-pattern gain in the direct direction (1.0 for omni).
+    if (settings.includeDirect && direct.visible)
     {
-        const float dist = juce::jmax (0.5f, tr.directDistance);
-        float amp = (1.0f / dist) * settings.directGainCompensation;
+        const int directSample = juce::jlimit (0, tracedOutputLen - 1,
+                                               (int) std::lround (direct.arrivalTime * (float) sr) - refOffset);
+        const float dist = juce::jmax (0.5f, direct.distance);
+        float amp = (1.0f / dist) * settings.directGainCompensation * direct.receptionGain;
         if (settings.applyAirAbsorption)
         {
             const auto air = AirAbsorption::getAllBandFactors (dist, settings.temperatureCelsius, settings.relativeHumidity);
@@ -196,7 +187,7 @@ juce::AudioBuffer<float> IRBuilder::build (const RayTracer::Result& tr,
             for (auto a : air) mean += a;
             amp *= mean / (float) Material::kNumBands;
         }
-        rayIR[0] += amp;
+        rayIR[(size_t) directSample] += amp;
     }
 
     // === Decide whether to synthesise a late tail ===
@@ -210,11 +201,6 @@ juce::AudioBuffer<float> IRBuilder::build (const RayTracer::Result& tr,
 
     if (doSynth)
     {
-        // Locate the broadband energy peak and the data cliff. Big/open scenes are
-        // hit-starved: the histogram CLIFFS to silence (no surviving rays reach the
-        // mic) long before the room stops ringing. We fit the decay over the RELIABLE
-        // region [peak, cliff] (anything narrower under-reads the slope), and the
-        // crossfade must begin before the cliff so the synthesiser samples real energy.
         const int eblk = juce::jmax (1, sr / 50); // 20 ms blocks
         double maxBlk = 0.0; int peakBin = 0;
         for (int s = 0; s + eblk <= tracedOutputLen; s += eblk)
@@ -232,9 +218,6 @@ juce::AudioBuffer<float> IRBuilder::build (const RayTracer::Result& tr,
         }
         const float dataExtentSec = (float) dataExtentBin / (float) sr;
 
-        // Fit the decay over the CLEAN part of the reliable region only — the last
-        // ~20% before the cliff steepens artificially as hits run out, which would
-        // bias the slope and create a kink at the handoff. slopeTo excludes it.
         const int slopeTo = peakBin + juce::jmax (1, (int) (0.8f * (float) (dataExtentBin - peakBin)));
 
         float bbSlope = -60.0f;
@@ -243,11 +226,6 @@ juce::AudioBuffer<float> IRBuilder::build (const RayTracer::Result& tr,
             bbSlope = -60.0f;
         const float rt60 = juce::jlimit (0.1f, (float) kMaxIRLengthSeconds, 60.0f / std::abs (bbSlope));
 
-        // Crossfade at the earlier of (1x RT60) and ~0.65x the data extent — the latter
-        // keeps the handoff inside the CLEAN decay region (before the cliff steepening),
-        // so the synthesised tail continues the same slope from the same level with no
-        // plateau/kink. Well-traced rooms: RT60 wins (keep real reflections); starved
-        // scenes: the cliff guard wins (hand the unreliable tail to synthesis).
         const float tracedSeconds = (float) tracedOutputLen / (float) sr;
         const float cliffGuardSec = dataExtentSec * 0.65f;
         const float xfStartSec = juce::jlimit (0.25f,
@@ -258,7 +236,6 @@ juce::AudioBuffer<float> IRBuilder::build (const RayTracer::Result& tr,
         const int tailExtSamples = (int) std::lround (settings.tailExtensionSeconds * sr);
         const int candidateLen   = juce::jmin (settings.maxLengthSamples, crossfadeStartBin + tailExtSamples);
         outLen = juce::jmax (tracedOutputLen, candidateLen);
-        // Re-cap (candidateLen already <= maxLengthSamples; tracedOutputLen <= maxLengthSamples).
         outLen = juce::jmin (outLen, settings.maxLengthSamples);
 
         const int tailLen = outLen - crossfadeStartBin;
@@ -268,38 +245,27 @@ juce::AudioBuffer<float> IRBuilder::build (const RayTracer::Result& tr,
         }
         else
         {
-            // Per-band decay slope is fit over the same clean region as the broadband
-            // estimate, so each band's rate reflects its true decay (not the cliff).
             const int analysisFrom = peakBin;
             const int analysisTo   = juce::jmax (analysisFrom + 1, slopeTo);
 
-            // Level at the crossfade point: a CENTRED window matching exactly what the
-            // ray-traced modulation loop computes at this sample, so the synthesised
-            // tail starts at the identical level (seamless handoff — no plateau).
             const int half = juce::jlimit (halfMin, halfMax, (int) (halfGrowth * (float) crossfadeStartBin));
             const int lvlLo = juce::jmax (0, crossfadeStartBin - half);
             const int lvlHi = juce::jmin (tracedOutputLen, crossfadeStartBin + half + 1);
 
             std::vector<float> tail ((size_t) tailLen, 0.0f);
             std::vector<float> tn   ((size_t) tailLen);
-            juce::Random tailRng (12345); // fixed seed -> reproducible tail (BakePresets / IRInspect)
+            juce::Random tailRng (tailSeed); // decorrelated per channel (stereo tail width)
 
             for (int b = 0; b < Material::kNumBands; ++b)
             {
                 const auto& be = bandEnergy[(size_t) b];
 
-                // Energy density at the crossfade point (energy per sample).
                 double sum = 0.0;
                 for (int k = lvlLo; k < lvlHi; ++k) sum += (double) be[(size_t) k];
                 const float energyAtXf = (float) (sum / (double) (lvlHi - lvlLo));
                 if (energyAtXf < 1.0e-10f)
                     continue; // band already silent — no tail needed
 
-                // Per-band decay slope; fall back to broadband, clamp to sane range.
-                // No band may decay SLOWER than the broadband aggregate (jmin keeps it
-                // at least as steep): the aggregate is the physical whole, so a single
-                // band lingering past it would be unphysical and bloat the tail. HF
-                // bands measuring faster keep their faster rate (the tail still darkens).
                 float slope = bbSlope;
                 float fit = 0.0f;
                 if (fitDecaySlope (be, analysisFrom, analysisTo, sr, fit) && fit < 0.0f)
@@ -307,15 +273,10 @@ juce::AudioBuffer<float> IRBuilder::build (const RayTracer::Result& tr,
                 slope = juce::jmin (slope, bbSlope);
                 slope = juce::jlimit (-120.0f, -10.0f, slope);
 
-                // Unit-RMS band noise for the tail.
                 for (int i = 0; i < tailLen; ++i)
                     tn[(size_t) i] = tailRng.nextFloat() * 2.0f - 1.0f;
                 bandpassToUnitRms (tn, b, (double) sr);
 
-                // Exponential decay envelope continuing the measured slope. With
-                // startDb = 10*log10(energy), decibelsToGain(startDb + slope*t) gives
-                // sqrt(energy(t)) — i.e. amplitude that continues the ray-traced
-                // sqrt(energy-density) envelope without a level jump.
                 const float startDb = 10.0f * std::log10 (energyAtXf);
                 for (int i = 0; i < tailLen; ++i)
                 {
@@ -325,8 +286,6 @@ juce::AudioBuffer<float> IRBuilder::build (const RayTracer::Result& tr,
                 }
             }
 
-            // Mix: in [crossfadeStartBin, outLen) the ray-traced part fades out while
-            // the synthesised tail fades in over crossfadeSeconds, then is all tail.
             rayIR.resize ((size_t) outLen, 0.0f); // zero-pad ray part beyond the trace
             const int xfLen = juce::jmax (1, (int) std::lround (settings.crossfadeSeconds * sr));
             for (int i = 0; i < tailLen; ++i)
@@ -338,55 +297,134 @@ juce::AudioBuffer<float> IRBuilder::build (const RayTracer::Result& tr,
         }
     }
 
-    // === Trim trailing near-silence (so small rooms don't carry seconds of zeros),
-    // then emit, final-fade, and peak-normalise. ===
-    const int fadeSamples = juce::jmax (1, (int) std::lround (settings.finalFadeSeconds * sr));
+    cb.ir = std::move (rayIR);
+    cb.synthesized = doSynth;
+    return cb;
+}
 
-    int finalLen = outLen;
-    if (doSynth)
+//==============================================================================
+juce::AudioBuffer<float> IRBuilder::build (const RayTracer::Result& tr,
+                                           const Settings& settings) const
+{
+    const int sr       = tr.sampleRate;
+    const int numMics  = juce::jmax (1, tr.getNumMics());
+    const int numBins  = juce::jmax (1, tr.numBins);
+
+    if (tr.histogramsPerMic.empty())
+        return juce::AudioBuffer<float> (1, 1); // degenerate — empty trace
+
+    // A directional mic's reception weighting makes its histogram effectively sparse,
+    // so widen the envelope smoothing to keep the late tail monotonic (anti-pump).
+    // Omni keeps scale 1.0 (bit-identical to Slice 4.5); an explicit setting can only
+    // raise it further. Resolved once and shared by all channels.
+    Settings s = settings;
+    s.envelopeSmoothingScale = juce::jmax (settings.envelopeSmoothingScale,
+                                           tr.anyMicDirectional ? 3.0f : 1.0f);
+
+    // Shared time reference = the EARLIEST direct arrival across mics. All channels
+    // place output sample 0 at this time, so a spaced pair preserves its inter-channel
+    // time difference (the near mic's direct at ~0, the far mic's a few samples later).
+    float refArrival = std::numeric_limits<float>::max();
+    for (const auto& di : tr.directPerMic)
+        refArrival = juce::jmin (refArrival, di.arrivalTime);
+    if (! (refArrival < std::numeric_limits<float>::max()))
+        refArrival = 0.0f;
+    const int refOffset = juce::jmax (0, (int) std::lround (refArrival * (float) sr));
+
+    // Carrier/tail decorrelation depends on the actual mic spacing. COINCIDENT mics
+    // (XY pair) share one position, so their diffuse fields arrive identically — they
+    // should use the SAME noise seed (intensity stereophony: the stereo image comes
+    // purely from the per-capsule reception-gain envelopes, an omni coincident pair is
+    // correctly mono). SPACED mics get DECORRELATED seeds so their independent diffuse
+    // fields / tails widen the image (time-of-arrival stereophony). (Deviation from the
+    // prompt's blanket decorrelation, which over-widens a coincident pair toward fully
+    // uncorrelated L/R.)
+    bool coincident = true;
+    for (int m = 1; m < numMics && m < (int) tr.micPositions.size(); ++m)
+        if ((tr.micPositions[(size_t) m] - tr.micPositions[0]).length() > 1.0e-3f)
+            coincident = false;
+
+    std::vector<ChannelBuild> channels;
+    channels.reserve ((size_t) numMics);
+    int commonLen = 1;
+    bool anySynth = false;
+    int  maxDirectSample = 0;
+    for (int m = 0; m < numMics; ++m)
     {
-        // Floor is measured relative to the REVERB's own peak (samples after the
-        // direct impulse), NOT the global peak. The direct is a lone unit spike that
-        // dwarfs the tail by ~40 dB; using it as the reference would trim the reverb
-        // while it is still decaying. -75 dB below the reverb peak (≈RT60 + margin)
-        // keeps the full audible decay, then the final fade takes it to true silence.
-        const int directGuard = juce::jmin (outLen, (int) (0.005f * sr)); // skip the direct
+        const int seedOffset = coincident ? 0 : m;
+        auto cb = buildChannel (tr.histogramsPerMic[(size_t) m], tr.directPerMic[(size_t) m],
+                                refOffset, numBins, tr.numRays, tr.micRadius,
+                                s, sr,
+                                /*noiseSeed*/ 20240517 + seedOffset, /*tailSeed*/ 12345 + seedOffset);
+        commonLen = juce::jmax (commonLen, (int) cb.ir.size());
+        anySynth  = anySynth || cb.synthesized;
+        maxDirectSample = juce::jmax (maxDirectSample,
+                                      (int) std::lround (tr.directPerMic[(size_t) m].arrivalTime * (float) sr) - refOffset);
+        channels.push_back (std::move (cb));
+    }
+
+    // Pad every channel to the common length (the longer tail wins; shorter channels
+    // are zero-padded, then individually faded below).
+    for (auto& cb : channels)
+        cb.ir.resize ((size_t) commonLen, 0.0f);
+
+    // === Trailing-silence trim (only when a tail was synthesised) ===
+    int finalLen = commonLen;
+    if (anySynth)
+    {
+        // Skip past every channel's direct spike (so the reverb-peak reference isn't
+        // dominated by the direct), then measure the floor relative to the reverb peak.
+        const int directGuard = juce::jmin (commonLen, maxDirectSample + (int) (0.005f * sr));
         float reverbPeak = 0.0f;
-        for (int i = directGuard; i < outLen; ++i) reverbPeak = juce::jmax (reverbPeak, std::abs (rayIR[(size_t) i]));
+        for (const auto& cb : channels)
+            for (int i = directGuard; i < commonLen; ++i)
+                reverbPeak = juce::jmax (reverbPeak, std::abs (cb.ir[(size_t) i]));
         if (reverbPeak <= 0.0f)
-            for (float v : rayIR) reverbPeak = juce::jmax (reverbPeak, std::abs (v));
+            for (const auto& cb : channels)
+                for (float v : cb.ir) reverbPeak = juce::jmax (reverbPeak, std::abs (v));
 
-        const float floorAbs = reverbPeak * juce::Decibels::decibelsToGain (-75.0f); // ~RT60 + margin
+        const float floorAbs = reverbPeak * juce::Decibels::decibelsToGain (-75.0f);
         int last = directGuard;
-        for (int i = outLen - 1; i >= 0; --i)
-            if (std::abs (rayIR[(size_t) i]) > floorAbs) { last = i; break; }
-        // End the buffer AT the last audible sample so the fade below lands on real
-        // signal (the old "+ fadeSamples" put the fade in the zero-pad beyond it, so
-        // the tail stopped abruptly at the trim floor with no fade — an audible cut).
-        finalLen = juce::jlimit (juce::jmin (outLen, halfMax), outLen, last + 1);
+        for (const auto& cb : channels)
+            for (int i = commonLen - 1; i >= 0; --i)
+                if (std::abs (cb.ir[(size_t) i]) > floorAbs) { last = juce::jmax (last, i); break; }
+
+        const int minLen = juce::jmin (commonLen, (int) (0.2f * sr));
+        finalLen = juce::jlimit (minLen, commonLen, last + 1);
     }
 
-    juce::AudioBuffer<float> ir (1, finalLen);
+    // === Emit, per-channel final fade, then SHARED peak-normalise to -1 dBFS ===
+    juce::AudioBuffer<float> ir (numMics, finalLen);
     ir.clear();
-    auto* o = ir.getWritePointer (0);
-    for (int i = 0; i < finalLen; ++i)
-        o[i] = rayIR[(size_t) i];
 
-    // Raised-cosine fade-out over the final samples, ending at EXACTLY zero (i=0 is
-    // the last sample -> gain 0; i=fade-1 -> gain ~1). Smooth so the tail eases into
-    // silence rather than stepping off the trim floor.
+    const int fadeSamples = juce::jmax (1, (int) std::lround (settings.finalFadeSeconds * sr));
     const int fade = juce::jmin (finalLen, fadeSamples);
-    for (int i = 0; i < fade; ++i)
+
+    for (int m = 0; m < numMics; ++m)
     {
-        const float x = (float) i / (float) fade;                                    // 0 (last) .. ~1
-        const float w = 0.5f * (1.0f - std::cos (juce::MathConstants<float>::pi * x)); // 0 .. 1
-        o[finalLen - 1 - i] *= w;
+        auto* o = ir.getWritePointer (m);
+        const auto& src = channels[(size_t) m].ir;
+        for (int i = 0; i < finalLen; ++i)
+            o[i] = src[(size_t) i];
+
+        // Raised-cosine fade-out over the final samples, ending at EXACTLY zero.
+        for (int i = 0; i < fade; ++i)
+        {
+            const float x = (float) i / (float) fade;
+            const float w = 0.5f * (1.0f - std::cos (juce::MathConstants<float>::pi * x));
+            o[finalLen - 1 - i] *= w;
+        }
     }
 
-    // Peak-normalise to -1 dBFS.
+    // Shared normalisation: one global peak across ALL channels -> one gain factor,
+    // so inter-channel level differences (the XY stereo image) survive.
     float peak = 0.0f;
-    for (int i = 0; i < finalLen; ++i)
-        peak = juce::jmax (peak, std::abs (o[i]));
+    for (int m = 0; m < numMics; ++m)
+    {
+        const auto* o = ir.getReadPointer (m);
+        for (int i = 0; i < finalLen; ++i)
+            peak = juce::jmax (peak, std::abs (o[i]));
+    }
     if (peak > 0.0f)
         ir.applyGain (juce::Decibels::decibelsToGain (-1.0f) / peak);
 

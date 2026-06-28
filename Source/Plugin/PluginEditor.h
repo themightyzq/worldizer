@@ -5,6 +5,9 @@
 #include "../Shared/WorldizerLookAndFeel.h"
 #include "../UI/RoomView2D.h"
 #include "../UI/PresetBrowser.h"
+#include "../UI/EditorToolPalette.h"
+#include "../UI/InspectorPanel.h"
+#include "../UI/UndoStack.h"
 
 /**
     Worldizer — Slice 4 editor. Top-down RoomView2D centrepiece, collapsible preset
@@ -20,11 +23,24 @@ public:
 
     void paint (juce::Graphics&) override;
     void resized() override;
+    bool keyPressed (const juce::KeyPress&) override;
 
 private:
     void timerCallback() override;
     void onPresetSelected (const juce::String& presetId);
     void updateSubtitle();
+    void syncMicControlsFromProcessor();   // combos / angle / rotate <- processor (no notify)
+    void refreshRoomViewFromProcessor();    // roomView scene <- processor live scene
+    void applyRotate (float azimuthDegrees, bool fullQuality); // Rotate knob -> selected directional element
+    float currentRotateAzimuth() const;     // azimuth of the current Rotate target, degrees
+
+    // === Edit mode (Slice 6a) ===
+    void setEditMode (bool on);
+    void onSaveAsButton();                     // shows the modal Save-As dialog
+    void handleInspectorEdit (std::function<void (Worldizer::Scene&)> mutator); // push undo + apply
+    void confirmDiscardThenAsync (std::function<void()> onProceed);              // discard prompt
+    void doUndo();
+    void updateStatusBar();
 
     WorldizerAudioProcessor& processorRef;
     WorldizerLookAndFeel lookAndFeel;
@@ -38,17 +54,32 @@ private:
     Worldizer::PresetBrowser presetBrowser;
     Worldizer::RoomView2D    roomView;
 
-    // Control row
+    // Control row 1: gain knobs + audition + indicator
     juce::Slider inputGainSlider, mixSlider, outputGainSlider;
     juce::Label  inputGainLabel, mixLabel, outputGainLabel;
     juce::TextButton clickButton { "Click" }, clicksButton { "Clicks" }, sweepButton { "Sweep" }, noiseButton { "Noise" };
     juce::Label  renderingIndicator;
 
+    // Control row 2: mic array configuration / pattern / XY angle / rotate
+    juce::Label    micSectionLabel, micConfigLabel, micPatternLabel, xyAngleLabel, rotateLabel;
+    juce::ComboBox micConfigCombo, micPatternCombo;
+    juce::Slider   xyAngleSlider, rotateSlider;
+
     // Footer
     juce::HyperlinkButton githubLink;
 
-    juce::Rectangle<int> controlRowBounds;
+    juce::Rectangle<int> controlRowBounds;  // whole control area (rows 1+2)
+    juce::Rectangle<int> knobRowBounds;     // row 1 only (cluster dividers)
+    juce::Rectangle<int> micRowBounds;      // row 2 only (MIC section)
     bool positionsModified = false;
+
+    // === Edit-mode UI (Slice 6a) ===
+    bool editMode = false;
+    Worldizer::EditorToolPalette editorTools;
+    Worldizer::InspectorPanel    inspector;
+    Worldizer::UndoStack         undoStack;
+    juce::Label                  statusBar;
+    Worldizer::Scene             previousScene; // snapshot for the next undo push
 
     std::unique_ptr<juce::SliderParameterAttachment> inputGainAttach, mixAttach, outputGainAttach;
     std::unique_ptr<juce::ButtonParameterAttachment> bypassAttach;
