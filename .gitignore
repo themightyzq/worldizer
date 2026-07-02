@@ -42,6 +42,8 @@ CLAUDE.md
 /Docs/contributing_recordings.md
 /Docs/JUCE_VST3_BEST_PRACTICES.md
 /Docs/JUCE_VST3_UI_UX_BEST_PRACTICES.md
+/Docs/onboarding_first_use.md
+/Docs/release_checklist.md
 
 # Generated preset bundles + embed blobs (regenerate with BakePresets).
 # The committed Resources/Presets/default_ir.wav cold-start bootstrap is kept.
