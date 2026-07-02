@@ -32,7 +32,8 @@ public:
     /** Returns the reflection coefficient (1 - absorption) per band, clamped to [0, 1]. */
     std::array<float, kNumBands> getReflection() const noexcept;
 
-    // === Standard materials for hardcoded scenes ===
+    // === Standard materials (published octave-band absorption tables; the
+    //     62.5 Hz and 8 kHz ends are extrapolated from the 125–4k data) ===
     static Material concrete();    // very low absorption, low scattering
     static Material drywall();     // mid absorption (bass panel loss), low scattering
     static Material woodFloor();   // mid-low absorption, low scattering
@@ -42,6 +43,17 @@ public:
     static Material foliage();     // mid absorption, very high scattering
     static Material gravel();      // mid absorption, high scattering
     static Material openAir();     // 1.0 absorption (ray dies on contact) — "no surface here"
+    static Material brick();       // unglazed brick: hard, mortar-joint scatter
+    static Material marble();      // polished stone: hardest interior surface
+    static Material tile();        // glazed ceramic: bathroom/kitchen shine
+    static Material plaster();     // plaster on lath: hard with LF panel loss
+    static Material acousticTile();// suspended mineral-fibre ceiling: very dead
+    static Material metal();       // sheet metal panel: hard top, LF panel absorption
+    static Material woodPanel();   // panelling over airspace: warm LF soak
+    static Material upholstery();  // padded seating / fabric surfaces
+    static Material asphalt();     // road surface: hard, slightly textured
+    static Material grass();       // lawn/turf: soft ground, HF eaten
+    static Material water();       // water surface: near-perfect reflector
 
 private:
     juce::String name { "default" };

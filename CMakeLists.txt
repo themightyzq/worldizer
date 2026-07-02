@@ -218,6 +218,8 @@ target_sources(BakeAssets
     PRIVATE
         Tools/bake_assets/bake_assets.cpp
         Source/DSP/CharacterLibrary.cpp
+        Source/Model/Material.cpp
+        Source/Model/MaterialResolver.cpp
 )
 target_compile_definitions(BakeAssets PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 target_link_libraries(BakeAssets
@@ -239,6 +241,7 @@ juce_generate_juce_header(BakePresets)
 target_sources(BakePresets
     PRIVATE
         Tools/bake_presets/bake_presets.cpp
+        Source/Model/LibraryScenes.cpp
         Source/Model/Material.cpp
         Source/Model/Brush.cpp
         Source/Model/SourceNode.cpp

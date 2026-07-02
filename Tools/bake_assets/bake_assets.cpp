@@ -15,6 +15,7 @@
 #include <JuceHeader.h>
 #include "AssetSynth.h"
 #include "../../Source/DSP/CharacterLibrary.h"
+#include "../../Source/Model/MaterialResolver.h"
 
 namespace
 {
@@ -84,6 +85,36 @@ int main (int argc, char* argv[])
             return WorldizerAssetSynth::synthesizeRoomTone (id, sampleRate);
         }
     };
+
+    // Export the material library (code is the source of truth — MaterialResolver;
+    // this JSON is the human-readable/interop mirror in Resources/Materials/).
+    {
+        const auto matDir = root.getChildFile ("Materials");
+        matDir.createDirectory();
+        juce::Array<juce::var> mats;
+        for (const auto& name : Worldizer::MaterialResolver::getKnownNames())
+        {
+            const auto m = Worldizer::MaterialResolver::resolve (name);
+            auto* o = new juce::DynamicObject();
+            o->setProperty ("name", name);
+            juce::Array<juce::var> abs;
+            for (int b = 0; b < Worldizer::Material::kNumBands; ++b)
+                abs.add (m.getAbsorption (b));
+            o->setProperty ("absorption", abs);       // 62.5, 125, 250, 500, 1k, 2k, 4k, 8k Hz
+            o->setProperty ("scattering", m.getScattering());
+            mats.add (juce::var (o));
+        }
+        auto* rootObj = new juce::DynamicObject();
+        rootObj->setProperty ("format", "worldizer-materials-v1");
+        rootObj->setProperty ("bands_hz", [] { juce::Array<juce::var> b;
+            for (auto f : { 62.5, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0 }) b.add (f);
+            return b; }());
+        rootObj->setProperty ("materials", mats);
+        const auto out = matDir.getChildFile ("materials.json");
+        out.replaceWithText (juce::JSON::toString (juce::var (rootObj)));
+        std::cout << "Wrote " << out.getFullPathName() << " ("
+                  << Worldizer::MaterialResolver::getKnownNames().size() << " materials)\n";
+    }
 
     std::cout << "Baking speaker character IRs...\n";
     bakeList (Worldizer::CharacterLibrary::speakers(), "Speakers", &WorldizerAssetSynth::synthesizeSpeakerIR);

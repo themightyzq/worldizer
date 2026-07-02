@@ -66,4 +66,59 @@ Material Material::openAir()
 {
     return { "open_air", { 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f }, 0.0f };
 }
+
+Material Material::brick()
+{
+    return { "brick", { 0.03f, 0.03f, 0.03f, 0.03f, 0.04f, 0.05f, 0.07f, 0.07f }, 0.25f };
+}
+
+Material Material::marble()
+{
+    return { "marble", { 0.01f, 0.01f, 0.01f, 0.01f, 0.01f, 0.02f, 0.02f, 0.02f }, 0.02f };
+}
+
+Material Material::tile()
+{
+    return { "tile", { 0.02f, 0.02f, 0.01f, 0.01f, 0.02f, 0.02f, 0.02f, 0.03f }, 0.05f };
+}
+
+Material Material::plaster()
+{
+    return { "plaster", { 0.20f, 0.14f, 0.10f, 0.06f, 0.05f, 0.04f, 0.03f, 0.03f }, 0.08f };
+}
+
+Material Material::acousticTile()
+{
+    return { "acoustic_tile", { 0.30f, 0.29f, 0.55f, 0.75f, 0.85f, 0.90f, 0.85f, 0.80f }, 0.15f };
+}
+
+Material Material::metal()
+{
+    return { "metal", { 0.20f, 0.14f, 0.10f, 0.06f, 0.05f, 0.05f, 0.05f, 0.05f }, 0.05f };
+}
+
+Material Material::woodPanel()
+{
+    return { "wood_panel", { 0.35f, 0.30f, 0.25f, 0.17f, 0.10f, 0.08f, 0.07f, 0.07f }, 0.10f };
+}
+
+Material Material::upholstery()
+{
+    return { "upholstery", { 0.15f, 0.19f, 0.37f, 0.56f, 0.67f, 0.61f, 0.59f, 0.58f }, 0.40f };
+}
+
+Material Material::asphalt()
+{
+    return { "asphalt", { 0.02f, 0.02f, 0.03f, 0.03f, 0.03f, 0.03f, 0.02f, 0.02f }, 0.15f };
+}
+
+Material Material::grass()
+{
+    return { "grass", { 0.05f, 0.11f, 0.26f, 0.60f, 0.69f, 0.92f, 0.99f, 0.99f }, 0.60f };
+}
+
+Material Material::water()
+{
+    return { "water", { 0.01f, 0.01f, 0.01f, 0.01f, 0.02f, 0.02f, 0.03f, 0.03f }, 0.05f };
+}
 } // namespace Worldizer

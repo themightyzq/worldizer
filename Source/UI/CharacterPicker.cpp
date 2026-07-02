@@ -42,15 +42,14 @@ public:
                 g.setColour (Col::surface);
             g.fillRect (row);
 
+            auto text = row.reduced (10, 3);
             g.setColour (isHover ? Col::background : Col::onSurface);
             g.setFont (juce::Font (juce::FontOptions (13.0f)));
-            g.drawText (list[(size_t) i].name, row.reduced (10, 0).removeFromTop (kRowHeight / 2 + 4),
-                        juce::Justification::bottomLeft);
+            g.drawText (list[(size_t) i].name, text.removeFromTop (17), juce::Justification::centredLeft);
 
             g.setColour (isHover ? Col::background.withAlpha (0.8f) : Col::onSurfaceVariant);
             g.setFont (juce::Font (juce::FontOptions (10.5f)));
-            g.drawText (list[(size_t) i].description, row.reduced (10, 2).removeFromBottom (kRowHeight / 2),
-                        juce::Justification::topLeft);
+            g.drawText (list[(size_t) i].description, text, juce::Justification::centredLeft);
         }
     }
 
@@ -91,8 +90,8 @@ public:
     }
 
 private:
-    static constexpr int kWidth = 260;
-    static constexpr int kRowHeight = 34;
+    static constexpr int kWidth = 280;
+    static constexpr int kRowHeight = 38;
 
     juce::Component::SafePointer<CharacterPicker> owner;
     int hoveredRow = -1;
