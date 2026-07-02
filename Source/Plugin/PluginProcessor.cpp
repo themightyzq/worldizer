@@ -502,6 +502,23 @@ void WorldizerAudioProcessor::applyEditedScene (const Worldizer::Scene& scene, b
     }, fullQuality, fullQuality ? 100.0f : 30.0f);
 }
 
+void WorldizerAudioProcessor::applyEditedSceneNoRender (const Worldizer::Scene& scene)
+{
+    Worldizer::Vec3 src, center;
+    {
+        const juce::ScopedLock sl (presetLock);
+        if (! currentPresetMetadata.has_value())
+            return;
+        auto& s = currentPresetMetadata->scene;
+        s.getSource()         = scene.getSource();
+        s.getMicArray()       = scene.getMicArray();
+        s.getSectorGeometry() = scene.getSectorGeometry();
+        src    = s.getSource().getPosition();
+        center = s.getMicArray().getCenterPosition();
+    }
+    updateDistanceFromSpacing ((center - src).length());
+}
+
 // --- Source ---
 void WorldizerAudioProcessor::setSourcePosition (Worldizer::Vec3 pos, bool fullQuality)
 {
@@ -1010,6 +1027,11 @@ juce::AudioProcessorEditor* WorldizerAudioProcessor::createEditor()
 void WorldizerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
+
+    // Fetch the render thread's latest full render BEFORE taking presetLock
+    // (each has its own lock; keep the ordering trivial).
+    const auto lastRender = renderThread != nullptr ? renderThread->getLastFullRender()
+                                                    : Worldizer::RenderThread::RenderedIR {};
     {
         const juce::ScopedLock sl (presetLock);
         state.setProperty ("currentPreset", currentPresetId, nullptr);
@@ -1053,6 +1075,43 @@ void WorldizerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
             if (! scene.getSectorGeometry().isEmpty())
                 state.setProperty ("sectorGeometry",
                                    juce::JSON::toString (scene.getSectorGeometry().toJson(), true), nullptr);
+
+            // R8: cache the edited scene's full-quality IR in the state blob so a
+            // session restore loads it instead of re-rendering. Only written when a
+            // render exists whose scene signature matches the CURRENT live scene —
+            // a scene at preset defaults never rendered, so nothing is written and
+            // restore stays a plain baked-preset load.
+            {
+                const auto liveSig = Worldizer::RenderThread::sceneSignature (scene);
+                const auto* match =
+                    (lastRender.ir.getNumSamples() > 0 && lastRender.sceneSignature == liveSig)
+                        ? &lastRender
+                        : (cachedEditedIR.ir.getNumSamples() > 0 && cachedEditedIR.sceneSignature == liveSig)
+                              ? &cachedEditedIR
+                              : nullptr;
+
+                constexpr int kMaxCachedBytes = 8 * 1024 * 1024;
+                if (match != nullptr)
+                {
+                    const auto& ir = match->ir;
+                    const int bytes = ir.getNumChannels() * ir.getNumSamples() * (int) sizeof (float);
+                    if (bytes > 0 && bytes <= kMaxCachedBytes)
+                    {
+                        juce::MemoryBlock raw ((size_t) bytes);
+                        auto* dst = static_cast<float*> (raw.getData());
+                        for (int ch = 0; ch < ir.getNumChannels(); ++ch)
+                            std::memcpy (dst + (size_t) ch * (size_t) ir.getNumSamples(),
+                                         ir.getReadPointer (ch),
+                                         (size_t) ir.getNumSamples() * sizeof (float));
+
+                        state.setProperty ("cachedIRChannels",   ir.getNumChannels(), nullptr);
+                        state.setProperty ("cachedIRSamples",    ir.getNumSamples(), nullptr);
+                        state.setProperty ("cachedIRSampleRate", match->sampleRate, nullptr);
+                        state.setProperty ("cachedIRSignature",  match->sceneSignature, nullptr);
+                        state.setProperty ("cachedIRData",       raw.toBase64Encoding(), nullptr);
+                    }
+                }
+            }
         }
     }
     state.setProperty ("sidebarCollapsed", sidebarCollapsed.load(), nullptr);
@@ -1156,7 +1215,42 @@ void WorldizerAudioProcessor::setStateInformation (const void* data, int sizeInB
                 }
 
                 if (sectorsRestored || interactiveStateDiffers (edited, defaultScene))
-                    applyEditedScene (edited, true);
+                {
+                    // R8: prefer the cached IR from the state blob — restoring an
+                    // edited session must not re-render (Soundminer requirement).
+                    // The signature check guarantees the cache matches THIS scene.
+                    Worldizer::RenderThread::RenderedIR cached;
+                    if (state.hasProperty ("cachedIRData"))
+                    {
+                        const int channels = (int) state["cachedIRChannels"];
+                        const int samples  = (int) state["cachedIRSamples"];
+                        juce::MemoryBlock raw;
+                        if (channels > 0 && samples > 0
+                            && raw.fromBase64Encoding (state["cachedIRData"].toString())
+                            && (int) raw.getSize() == channels * samples * (int) sizeof (float))
+                        {
+                            cached.ir.setSize (channels, samples);
+                            const auto* srcData = static_cast<const float*> (raw.getData());
+                            for (int ch = 0; ch < channels; ++ch)
+                                cached.ir.copyFrom (ch, 0, srcData + (size_t) ch * (size_t) samples, samples);
+                            cached.sampleRate     = (double) state["cachedIRSampleRate"];
+                            cached.sceneSignature = state["cachedIRSignature"].toString();
+                        }
+                    }
+
+                    if (cached.ir.getNumSamples() > 0
+                        && cached.sceneSignature == Worldizer::RenderThread::sceneSignature (edited))
+                    {
+                        applyEditedSceneNoRender (edited);
+                        renderThread->requestIRLoad (cached.ir, cached.sampleRate, 80.0f);
+                        const juce::ScopedLock sl (presetLock);
+                        cachedEditedIR = std::move (cached);
+                    }
+                    else
+                    {
+                        applyEditedScene (edited, true);
+                    }
+                }
 
                 // The edit-dirty flag is part of session state too, restored last so
                 // the apply above doesn't accidentally clear it via setCurrentPresetId.

@@ -82,6 +82,11 @@ public:
         Used by RoomView2D for spatial drags (position / rotation). */
     void applyEditedScene (const Worldizer::Scene& scene, bool fullQuality);
 
+    /** Same scene copy + distance-model refresh but WITHOUT a render — used on
+        state restore when the edited scene's IR was cached in the state blob
+        (Soundminer: re-instantiation must not trigger re-rendering). */
+    void applyEditedSceneNoRender (const Worldizer::Scene& scene);
+
     /** Returns a copy of the live scene (source + mic array + geometry). */
     Worldizer::Scene getCurrentScene() const;
 
@@ -201,6 +206,11 @@ private:
     std::atomic<float>* ambientLevelValue = nullptr;
     std::atomic<bool> characterReloadNeeded { false };
     juce::String currentAmbientBedId; // guarded by presetLock
+
+    // Cached full-quality IR of the current EDITED scene, persisted in plugin
+    // state so restoring an edited session loads instead of re-rendering (R8).
+    // Guarded by presetLock.
+    Worldizer::RenderThread::RenderedIR cachedEditedIR;
 
     juce::dsp::Gain<float> inputGain, outputGain;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> mixSmoothed;

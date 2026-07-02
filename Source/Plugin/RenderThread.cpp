@@ -42,6 +42,31 @@ bool RenderThread::isBusy() const
     return rendering.load() || pendingJob != nullptr;
 }
 
+RenderThread::RenderedIR RenderThread::getLastFullRender() const
+{
+    const juce::ScopedLock sl (lastRenderLock);
+    return lastFullRender;
+}
+
+juce::String RenderThread::sceneSignature (const Scene& scene)
+{
+    juce::String sig;
+    auto vec = [] (Vec3 v) { return juce::String (v.x, 4) + "," + juce::String (v.y, 4) + "," + juce::String (v.z, 4) + ";"; };
+
+    const auto& src = scene.getSource();
+    sig << vec (src.getPosition()) << vec (src.getOrientation()) << (int) src.getPattern() << ";";
+
+    const auto& arr = scene.getMicArray();
+    sig << (int) arr.getConfiguration() << ";" << (int) arr.getPattern() << ";"
+        << juce::String (arr.getXYAngleDegrees(), 2) << ";";
+    for (int m = 0; m < arr.getNumMics(); ++m)
+        sig << vec (arr.getMic (m).getPosition()) << vec (arr.getMic (m).getOrientation());
+
+    if (! scene.getSectorGeometry().isEmpty())
+        sig << juce::JSON::toString (scene.getSectorGeometry().toJson(), true);
+    return sig;
+}
+
 void RenderThread::run()
 {
     while (! threadShouldExit())
@@ -97,6 +122,15 @@ void RenderThread::run()
         // replaces it on release carries the smooth, fade-to-silence tail.
         irSettings.synthesizeLateTail = (job->quality == Job::Quality::Full);
         const auto ir = builder.build (result, irSettings);
+
+        if (job->quality == Job::Quality::Full)
+        {
+            const auto signature = sceneSignature (job->scene);
+            const juce::ScopedLock sl (lastRenderLock);
+            lastFullRender.ir.makeCopyOf (ir);
+            lastFullRender.sampleRate = 48000.0;
+            lastFullRender.sceneSignature = signature;
+        }
 
         // Don't clobber the idle convolver mid-crossfade.
         while (engine.isIRPending() && ! threadShouldExit())

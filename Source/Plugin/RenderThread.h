@@ -49,6 +49,23 @@ public:
 
     bool isRendering() const noexcept { return rendering.load(); }
 
+    /** Copy of the most recent FULL-quality scene render (empty if none yet).
+        Used to cache the edited-scene IR in plugin state so a session restore
+        never re-renders (Soundminer requirement). Thread-safe. */
+    struct RenderedIR
+    {
+        juce::AudioBuffer<float> ir;
+        double sampleRate = 48000.0;
+        juce::String sceneSignature;   // sceneSignature() of the rendered scene
+    };
+    RenderedIR getLastFullRender() const;
+
+    /** Deterministic signature of a scene's render-relevant interactive state
+        (source/mic transforms + patterns + sector geometry). Two scenes with
+        equal signatures produce the same full-quality render, so a cached IR
+        tagged with the signature can safely stand in for a re-render. */
+    static juce::String sceneSignature (const Scene& scene);
+
     /** True if a job is pending or running. Message-thread callers that need to
         touch the engine directly (prepareToPlay's synchronous cold-start load)
         may only do so when this is false. */
@@ -63,6 +80,9 @@ private:
     std::unique_ptr<Job>  pendingJob;
     juce::WaitableEvent   wakeup;
     std::atomic<bool>     rendering { false };
+
+    mutable juce::CriticalSection lastRenderLock;
+    RenderedIR lastFullRender;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (RenderThread)
 };
