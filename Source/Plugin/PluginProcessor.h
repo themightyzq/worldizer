@@ -23,7 +23,7 @@
 */
 class WorldizerAudioProcessor : public juce::AudioProcessor,
                                 private juce::AudioProcessorValueTreeState::Listener,
-                                private juce::AsyncUpdater
+                                private juce::Timer
 {
 public:
     WorldizerAudioProcessor();
@@ -89,6 +89,12 @@ public:
 
     /** Returns a copy of the live scene (source + mic array + geometry). */
     Worldizer::Scene getCurrentScene() const;
+
+    /** Monotonic revision of the live scene — bumps on every scene mutation
+        (edits, preset loads, state restore). Lets the editor detect out-of-band
+        changes that keep the same preset id (e.g. a state restore with a
+        different mic config) without diffing scene contents every tick. */
+    int getSceneRevision() const noexcept { return sceneRevision.load(); }
 
     // --- Source ---
     void setSourcePosition (Worldizer::Vec3 pos, bool fullQuality);
@@ -172,11 +178,21 @@ private:
     void updateDryDelayToMatchConvolutionLatency();
     static juce::String sceneNameToPresetId (const juce::String& sceneName);
 
+    /** Re-arms the convolver with the correct IR for the CURRENT live scene
+        without touching the scene itself: the R8 cached IR when its signature
+        matches, else the preset's baked IR (plus a background re-render if the
+        scene has real edits). Used on re-prepare, where reloading the preset
+        outright would wipe restored/live edits. */
+    void rearmEngineForCurrentScene();
+
     // Character / ambient-bed loading (message thread). Parameter changes can
-    // arrive on any thread, so parameterChanged only flags + triggers the async
-    // updater; the actual (allocating) WAV decode happens in handleAsyncUpdate.
+    // arrive on ANY thread including the audio thread (host automation), so
+    // parameterChanged only sets a lock-free flag; a message-thread timer polls
+    // it and does the (allocating) WAV decode. NOT AsyncUpdater — its
+    // triggerAsyncUpdate posts to the system message queue, which takes a lock
+    // (audio-thread hazard).
     void parameterChanged (const juce::String& parameterID, float newValue) override;
-    void handleAsyncUpdate() override;
+    void timerCallback() override;
     void loadSourceCharacterByIndex (int index);
     void loadMicCharacterByIndex (int index);
     void loadCharactersFromParams();
@@ -222,6 +238,7 @@ private:
     juce::AudioParameterBool* bypassParam = nullptr;
 
     mutable juce::CriticalSection presetLock;
+    std::atomic<int> sceneRevision { 0 };
     juce::String currentPresetId { kDefaultPreset };
     std::optional<Worldizer::WzPresetIO::Loaded> currentPresetMetadata;
     std::atomic<bool> sidebarCollapsed { false };
@@ -235,8 +252,13 @@ private:
     // and the inverse-distance level to the WET signal, driven by source/mic spacing.
     Worldizer::DistanceModel distanceModel;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Lagrange3rd> wetPreDelay { 1 << 16 };
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>         preDelaySmoothed;
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> attenuationSmoothed;
+    // SmoothedValue is NOT thread-safe, so the message thread only writes the
+    // atomic *targets*; the audio thread applies them via setTargetValue at the
+    // top of processBlock (same pattern as drive/noise/bed level).
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>         preDelaySmoothed;   // audio thread only
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> attenuationSmoothed; // audio thread only
+    std::atomic<float> preDelaySamplesTarget { 0.0f };
+    std::atomic<float> attenuationTarget { 1.0f };
     std::atomic<float> currentDistanceMeters { 1.0f };
 
     juce::AudioBuffer<float> dryScratch;

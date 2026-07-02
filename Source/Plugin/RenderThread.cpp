@@ -36,10 +36,16 @@ void RenderThread::requestIRLoad (const juce::AudioBuffer<float>& ir, double irS
     requestRender (job);
 }
 
-bool RenderThread::isBusy() const
+void RenderThread::drain()
 {
-    const juce::ScopedLock sl (jobLock);
-    return rendering.load() || pendingJob != nullptr;
+    {
+        const juce::ScopedLock sl (jobLock);
+        pendingJob = nullptr;
+    }
+    abortWait.store (true);
+    while (busy.load() && ! threadShouldExit())
+        juce::Thread::sleep (1);
+    abortWait.store (false);
 }
 
 RenderThread::RenderedIR RenderThread::getLastFullRender() const
@@ -85,14 +91,17 @@ void RenderThread::run()
         if (job == nullptr)
             continue;
 
+        busy.store (true); // drain() gate — covers the WHOLE job, both kinds
+
         // Pre-baked IR: no trace, just the gated hand-off (fast, so no
         // "rendering..." indicator).
         if (job->bakedIR.getNumSamples() > 0)
         {
-            while (engine.isIRPending() && ! threadShouldExit())
+            while (engine.isIRPending() && ! threadShouldExit() && ! abortWait.load())
                 juce::Thread::sleep (2);
-            if (! threadShouldExit())
+            if (! threadShouldExit() && ! abortWait.load())
                 engine.loadIR (job->bakedIR, job->bakedIRSampleRate, job->crossfadeMs);
+            busy.store (false);
             continue;
         }
 
@@ -132,14 +141,17 @@ void RenderThread::run()
             lastFullRender.sceneSignature = signature;
         }
 
-        // Don't clobber the idle convolver mid-crossfade.
-        while (engine.isIRPending() && ! threadShouldExit())
+        // Don't clobber the idle convolver mid-crossfade. abortWait covers
+        // drain() — including when audio is stopped and the crossfade would
+        // never complete on its own.
+        while (engine.isIRPending() && ! threadShouldExit() && ! abortWait.load())
             juce::Thread::sleep (2);
 
-        if (! threadShouldExit())
+        if (! threadShouldExit() && ! abortWait.load())
             engine.loadIR (ir, 48000.0, job->crossfadeMs);
 
         rendering.store (false);
+        busy.store (false);
     }
 }
 } // namespace Worldizer

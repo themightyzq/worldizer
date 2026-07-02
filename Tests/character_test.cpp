@@ -18,6 +18,7 @@
 #include <map>
 #include "../Tools/bake_assets/AssetSynth.h"
 #include "../Source/DSP/CharacterLibrary.h"
+#include "../Source/DSP/ConvolutionEngine.h"
 
 using namespace Worldizer;
 
@@ -116,13 +117,24 @@ int main()
 
     std::cout << "=== Synthesis: every id produces a normalised IR ===\n";
     std::map<juce::String, juce::AudioBuffer<float>> speakerIRs, micIRs;
+    // Character IRs are normalised to UNIT ENERGY (sum h^2 == 1) so the runtime
+    // loads them with Normalise::no and every character — including the "none"
+    // unit delta, whose energy is exactly 1 — passes at consistent unity
+    // loudness. (JUCE's Normalise::yes scales even a delta to 0.125 = -18 dB.)
+    auto energyOf = [] (const juce::AudioBuffer<float>& b)
+    {
+        double e = 0.0;
+        for (int i = 0; i < b.getNumSamples(); ++i)
+            e += (double) b.getSample (0, i) * (double) b.getSample (0, i);
+        return e;
+    };
     for (const auto& d : CharacterLibrary::speakers())
     {
         if (juce::String (d.id) == "none") continue;
         auto ir = WorldizerAssetSynth::synthesizeSpeakerIR (d.id, sr);
         check (ir.getNumSamples() > 0, juce::String (d.id) + " synthesizes");
-        const float peakDb = juce::Decibels::gainToDecibels (peakOf (ir), -120.0f);
-        check (std::abs (peakDb - (-3.0f)) < 0.1f, juce::String (d.id) + " peak -3 dBFS (got " + juce::String (peakDb, 2) + ")");
+        const double e = energyOf (ir);
+        check (std::abs (e - 1.0) < 1.0e-3, juce::String (d.id) + " unit energy (got " + juce::String (e, 6) + ")");
         speakerIRs[d.id] = std::move (ir);
     }
     for (const auto& d : CharacterLibrary::mics())
@@ -130,6 +142,8 @@ int main()
         if (juce::String (d.id) == "none") continue;
         auto ir = WorldizerAssetSynth::synthesizeMicIR (d.id, sr);
         check (ir.getNumSamples() > 0, juce::String (d.id) + " synthesizes");
+        const double e = energyOf (ir);
+        check (std::abs (e - 1.0) < 1.0e-3, juce::String (d.id) + " unit energy (got " + juce::String (e, 6) + ")");
         micIRs[d.id] = std::move (ir);
     }
 
@@ -201,6 +215,55 @@ int main()
         check (seamStep < 8.0 * meanStep,
                juce::String (d.id) + " seam continuous (seam " + juce::String (seamStep, 6)
                + " vs mean step " + juce::String (meanStep, 6) + ")");
+    }
+
+    std::cout << "=== Runtime level: 'none' delta and unit-energy IRs pass at unity ===\n";
+    {
+        // Regression pin for the -18 dB bug: JUCE's Normalise::yes scales even a
+        // unit delta to 0.125, so the character path loads with normalise=false
+        // and unit-energy IRs. Verify end-to-end through the actual engine.
+        auto steadyGainThrough = [&] (const juce::AudioBuffer<float>& irIn)
+        {
+            Worldizer::ConvolutionEngine engine;
+            engine.prepare (48000.0, 512, 2);
+            engine.loadIR (irIn, 48000.0, 5.0f, /*normalise*/ false);
+
+            // juce::dsp::Convolution installs the IR from a background thread
+            // that polls every 10 ms — a tight processing loop outruns it and
+            // measures the pre-install state. Give it wall-clock time.
+            juce::Thread::sleep (200);
+
+            juce::AudioBuffer<float> block (2, 512);
+            juce::Random rng (99);
+            double sumIn = 0.0, sumOut = 0.0;
+            for (int b = 0; b < 200; ++b)
+            {
+                for (int i = 0; i < 512; ++i)
+                {
+                    const float s = 0.25f * (rng.nextFloat() * 2.0f - 1.0f);
+                    block.setSample (0, i, s);
+                    block.setSample (1, i, s);
+                    if (b >= 100) sumIn += (double) s * (double) s;
+                }
+                juce::dsp::AudioBlock<float> ab (block);
+                engine.process (ab);
+                if (b >= 100)
+                    for (int i = 0; i < 512; ++i)
+                        sumOut += (double) block.getSample (0, i) * (double) block.getSample (0, i);
+            }
+            return std::sqrt (sumOut / sumIn);
+        };
+
+        juce::AudioBuffer<float> delta (1, 1);
+        delta.setSample (0, 0, 1.0f);
+        const double noneGain = steadyGainThrough (delta);
+        check (std::abs (noneGain - 1.0) < 0.02,
+               "'none' delta is a true bypass (gain " + juce::String (noneGain, 4) + ", want 1.0)");
+
+        const double paGain = steadyGainThrough (speakerIRs["spk_fullrange_pa"]);
+        check (std::abs (paGain - 1.0) < 0.35,
+               "unit-energy full-range PA passes near unity on broadband noise (gain "
+               + juce::String (paGain, 4) + ")");
     }
 
     std::cout << (failures == 0 ? "\nALL PASS\n" : "\n" + juce::String (failures) + " FAILURES\n");

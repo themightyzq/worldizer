@@ -511,6 +511,7 @@ target_sources(CharacterTest
     PRIVATE
         Tests/character_test.cpp
         Source/DSP/CharacterLibrary.cpp
+        Source/DSP/ConvolutionEngine.cpp
 )
 target_compile_definitions(CharacterTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 target_link_libraries(CharacterTest
@@ -558,3 +559,4 @@ foreach(wz_test
         AmbientBedTest)
     add_test(NAME ${wz_test} COMMAND ${wz_test})
 endforeach()
+

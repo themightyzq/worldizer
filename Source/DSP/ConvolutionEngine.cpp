@@ -43,7 +43,8 @@ void ConvolutionEngine::reset()
     swapRequested.store (false);
 }
 
-void ConvolutionEngine::loadIR (const juce::AudioBuffer<float>& ir, double irSampleRate, float crossfadeMs)
+void ConvolutionEngine::loadIR (const juce::AudioBuffer<float>& ir, double irSampleRate,
+                                float crossfadeMs, bool normalise)
 {
     if (! prepared)
         return;
@@ -74,7 +75,8 @@ void ConvolutionEngine::loadIR (const juce::AudioBuffer<float>& ir, double irSam
     convolverB->loadImpulseResponse (std::move (copy), irSampleRate,
                                      stereoFlag,
                                      juce::dsp::Convolution::Trim::yes,
-                                     juce::dsp::Convolution::Normalise::yes);
+                                     normalise ? juce::dsp::Convolution::Normalise::yes
+                                               : juce::dsp::Convolution::Normalise::no);
 
     const int xf = juce::jmax (1, (int) std::round (crossfadeMs * 0.001 * sampleRate));
     crossfadeSamples.store (xf);
@@ -102,7 +104,13 @@ void ConvolutionEngine::process (juce::dsp::AudioBlock<float> block)
     const int numSamples = (int) block.getNumSamples();
     const int chs        = (int) block.getNumChannels();
 
-    if (! crossfadeActive)
+    // Contract: hosts never exceed the prepared maximum block size. If one does
+    // anyway, degrade gracefully for this block (process A only, no crossfade
+    // advance) rather than read/write past the fixed crossfade scratch — the
+    // audio thread must not reallocate.
+    jassert (numSamples <= scratchA.getNumSamples() && chs <= scratchA.getNumChannels());
+    if (! crossfadeActive
+        || numSamples > scratchA.getNumSamples() || chs > scratchA.getNumChannels())
     {
         convolverA->process (juce::dsp::ProcessContextReplacing<float> (block));
         return;
@@ -138,8 +146,12 @@ void ConvolutionEngine::process (juce::dsp::AudioBlock<float> block)
     if (crossfadeRemaining <= 0)
     {
         crossfadeActive = false;
-        crossfadeInProgress.store (false);
         std::swap (convolverA, convolverB); // A now holds the new IR
+        // Clear the loader gate ONLY AFTER the swap: loaders poll isIRPending()
+        // and touch convolverB the moment it reads false — clearing first opens
+        // a window where a load lands on the pre-swap pointer and the new IR is
+        // silently faded back out.
+        crossfadeInProgress.store (false);
     }
 }
 

@@ -10,9 +10,18 @@ void AmbientBed::prepare (const juce::dsp::ProcessSpec& spec)
     levelSmoothed.reset (spec.sampleRate, 0.05);
     levelSmoothed.setCurrentAndTargetValue (levelTarget.load());
 
+    // Release only the AUDIO-THREAD-owned slots (audio is quiesced during
+    // prepare). Loading/Pending slots belong to the message thread and may be
+    // mid-fill by a concurrent preset load — clobbering one to Free would let a
+    // second setSample claim the same buffer (two writers). A surviving Pending
+    // bed is simply adopted on the first process(). (Note: it was resampled for
+    // the PREVIOUS rate; the processor reloads the bed after prepare anyway.)
     for (auto& slot : slots)
-        slot.state.store (SlotState::Free);
-    pendingSlot.store (-1);
+    {
+        const auto s = slot.state.load();
+        if (s == SlotState::Active || s == SlotState::Fading)
+            slot.state.store (SlotState::Free);
+    }
 
     activeSlot = fadingSlot = -1;
     activePos = fadingPos = 0;
@@ -61,24 +70,29 @@ void AmbientBed::setSample (const juce::AudioBuffer<float>& sample, double sourc
         return;
     }
 
+    // Playback reads a single mono loop into every output channel, so a
+    // multi-channel bed is explicitly mixed down here (equal-gain sum / N) —
+    // not silently truncated to channel 0.
+    juce::AudioBuffer<float> mono (1, sample.getNumSamples());
+    mono.clear();
+    for (int ch = 0; ch < sample.getNumChannels(); ++ch)
+        mono.addFrom (0, 0, sample, ch, 0, sample.getNumSamples(),
+                      1.0f / (float) juce::jmax (1, sample.getNumChannels()));
+
     auto& dst = slots[(size_t) slotIndex].buffer;
-    const int numCh = sample.getNumChannels();
 
     if (std::abs (sourceSampleRate - sampleRate) < 0.5)
     {
-        dst.makeCopyOf (sample);
+        dst.makeCopyOf (mono);
     }
     else
     {
         // Resample to the host rate (message thread; allocation fine here).
         const double ratio  = sourceSampleRate / sampleRate;
-        const int    outLen = juce::jmax (1, (int) std::floor ((double) sample.getNumSamples() / ratio));
-        dst.setSize (numCh, outLen, false, true);
-        for (int ch = 0; ch < numCh; ++ch)
-        {
-            juce::LagrangeInterpolator interp;
-            interp.process (ratio, sample.getReadPointer (ch), dst.getWritePointer (ch), outLen);
-        }
+        const int    outLen = juce::jmax (1, (int) std::floor ((double) mono.getNumSamples() / ratio));
+        dst.setSize (1, outLen, false, true);
+        juce::LagrangeInterpolator interp;
+        interp.process (ratio, mono.getReadPointer (0), dst.getWritePointer (0), outLen);
     }
 
     publishSlot (slotIndex);
@@ -157,10 +171,12 @@ void AmbientBed::addToBuffer (juce::AudioBuffer<float>& buffer)
 
         if (fadeRemaining > 0)
         {
+            // Equal-power: the two beds are uncorrelated, a linear blend would
+            // dip -3 dB at the fade midpoint.
             const float t = 1.0f - (float) fadeRemaining / (float) fadeTotal; // 0 -> 1
             const float a = activeLen > 0 ? activeData[activePos] : 0.0f;
             const float f = fadingLen > 0 ? fadingData[fadingPos] : 0.0f;
-            s = a * t + f * (1.0f - t);
+            s = a * std::sqrt (t) + f * std::sqrt (1.0f - t);
 
             if (--fadeRemaining == 0 && fadingSlot >= 0)
             {

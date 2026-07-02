@@ -115,13 +115,15 @@ WorldizerAudioProcessor::WorldizerAudioProcessor()
     presetManager->rescan();
 
     renderThread = std::make_unique<RenderThread> (convolution);
+
+    startTimer (30); // message-thread poll for characterReloadNeeded (see parameterChanged)
 }
 
 WorldizerAudioProcessor::~WorldizerAudioProcessor()
 {
+    stopTimer();
     apvts.removeParameterListener ("sourceCharacter", this);
     apvts.removeParameterListener ("micCharacter", this);
-    cancelPendingUpdate();
 }
 
 //==============================================================================
@@ -186,13 +188,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout WorldizerAudioProcessor::cre
 
 void WorldizerAudioProcessor::parameterChanged (const juce::String&, float)
 {
-    // May fire on the audio thread (host automation). Defer the (allocating) WAV
-    // decode to the message thread.
+    // May fire on the audio thread (host automation) — a lock-free flag is all
+    // that is safe here. The 30 ms message-thread timer does the actual load.
     characterReloadNeeded.store (true);
-    triggerAsyncUpdate();
 }
 
-void WorldizerAudioProcessor::handleAsyncUpdate()
+void WorldizerAudioProcessor::timerCallback()
 {
     if (characterReloadNeeded.exchange (false))
         loadCharactersFromParams();
@@ -297,6 +298,7 @@ void WorldizerAudioProcessor::setCurrentPresetId (const juce::String& presetId, 
         currentPresetMetadata = loaded->withoutIR();
         currentAmbientBedId = loaded->ambientBed;
     }
+    sceneRevision.fetch_add (1);
     // Fresh preset load => no uncommitted edits relative to its on-disk defaults.
     dirtyFlag.store (false);
 
@@ -382,14 +384,16 @@ void WorldizerAudioProcessor::renderCurrentScene (bool fullQuality, float crossf
 
 void WorldizerAudioProcessor::updateDistanceFromSpacing (float distance)
 {
-    // Distance cues live on the wet path (the IR is distance-independent). Update the
-    // pre-delay / attenuation targets; the smoothers ramp to them in processBlock.
+    // Distance cues live on the wet path (the IR is distance-independent). This can
+    // run on the message thread while audio is processing, so only the ATOMIC
+    // targets are written here; processBlock feeds them to the (audio-thread-only)
+    // smoothers. SmoothedValue::setTargetValue is not thread-safe.
     currentDistanceMeters.store (distance);
     const double sr = getSampleRate();
-    if (prepared.load() && sr > 0.0)
+    if (sr > 0.0)
     {
-        preDelaySmoothed.setTargetValue (distanceModel.computePreDelaySamples (distance, sr));
-        attenuationSmoothed.setTargetValue (juce::jmax (1.0e-4f, distanceModel.computeAttenuationGain (distance)));
+        preDelaySamplesTarget.store (distanceModel.computePreDelaySamples (distance, sr));
+        attenuationTarget.store (juce::jmax (1.0e-4f, distanceModel.computeAttenuationGain (distance)));
     }
 }
 
@@ -408,6 +412,7 @@ void WorldizerAudioProcessor::mutateSceneAndRender (const std::function<void (Wo
 
     // Distance model follows the mic-array CENTRE (single mic: the mic; XY: the array;
     // spaced pair: the midpoint). Inter-channel time/level differences are in the IR.
+    sceneRevision.fetch_add (1);
     updateDistanceFromSpacing ((center - src).length());
     renderCurrentScene (fullQuality, crossfadeMs);
 }
@@ -444,18 +449,26 @@ bool WorldizerAudioProcessor::saveCurrentSceneAsPreset (const juce::String& pres
     if (bundleDir.exists())
         bundleDir.deleteRecursively();
 
-    // Snapshot the live scene under lock.
+    // Snapshot the live scene + inherited bed/character assignments under lock.
     Worldizer::Scene snapshot;
+    juce::String inheritedBed, inheritedSrcChar, inheritedMicChar;
+    float inheritedBedLevel = -20.0f;
     {
         const juce::ScopedLock sl (presetLock);
         if (! currentPresetMetadata.has_value()) { errorOut = "no current scene"; return false; }
-        snapshot = currentPresetMetadata->scene;
+        snapshot          = currentPresetMetadata->scene;
+        inheritedBed      = currentPresetMetadata->ambientBed;
+        inheritedBedLevel = currentPresetMetadata->ambientLevelDb;
+        inheritedSrcChar  = currentPresetMetadata->defaultSourceCharacter;
+        inheritedMicChar  = currentPresetMetadata->defaultMicCharacter;
     }
 
     // Synchronous full-quality render (~0.2 s typical) on the message thread.
+    // Same seed as RenderThread so the saved rendered.wav is sample-identical to
+    // what the user has been auditioning.
     Worldizer::RayTracer tracer;
     Worldizer::RayTracer::Settings rt;
-    rt.numRays = 50000; rt.maxBounces = 32; rt.randomSeed = 42;
+    rt.numRays = 50000; rt.maxBounces = 32; rt.randomSeed = 12345;
     const auto traceResult = tracer.trace (snapshot, rt, 48000);
 
     Worldizer::IRBuilder builder;
@@ -470,6 +483,13 @@ bool WorldizerAudioProcessor::saveCurrentSceneAsPreset (const juce::String& pres
     meta.description = description;
     meta.author      = "User";
     meta.tags        = tags;
+    // Inherit the source preset's bed/character assignments — without this, the
+    // room tone the user was hearing goes silent the moment they hit Save (the
+    // new preset would load with no bed).
+    meta.ambientBed             = inheritedBed;
+    meta.ambientLevelDb         = inheritedBedLevel;
+    meta.defaultSourceCharacter = inheritedSrcChar;
+    meta.defaultMicCharacter    = inheritedMicChar;
     meta.renderNumRays    = rt.numRays;
     meta.renderMaxBounces = rt.maxBounces;
     meta.renderSampleRate = 48000;
@@ -516,6 +536,7 @@ void WorldizerAudioProcessor::applyEditedSceneNoRender (const Worldizer::Scene& 
         src    = s.getSource().getPosition();
         center = s.getMicArray().getCenterPosition();
     }
+    sceneRevision.fetch_add (1);
     updateDistanceFromSpacing ((center - src).length());
 }
 
@@ -761,13 +782,12 @@ void WorldizerAudioProcessor::loadEmbeddedDefaultIR()
         juce::AudioBuffer<float> ir ((int) reader->numChannels, (int) reader->lengthInSamples);
         reader->read (&ir, 0, (int) reader->lengthInSamples, 0, true, true);
 
-        // Synchronous load for instant cold-start audio — but only when the render
-        // thread has no work (it is the engine's one sanctioned loading thread; on
-        // a true cold start it is always idle). If it is busy (e.g. prepareToPlay
-        // re-entry on a sample-rate change mid-render), queue instead of racing.
-        if (renderThread == nullptr || ! renderThread->isBusy())
-            convolution.loadIR (ir, reader->sampleRate, 5.0f); // nothing audible to fade from
-        else
+        // Queued (not synchronous): the render thread is the engine's ONE
+        // sanctioned loading thread — a direct load here would race it (a
+        // check-then-load was TOCTOU). On a true cold start the thread is idle
+        // and the load lands within milliseconds; whenever a preset/scene IR is
+        // also queued, the one-deep queue correctly lets it win.
+        if (renderThread != nullptr)
             renderThread->requestIRLoad (ir, reader->sampleRate, 5.0f);
     }
 }
@@ -777,6 +797,11 @@ void WorldizerAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBl
 {
     const int numCh = getTotalNumOutputChannels();
     const juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32) samplesPerBlock, (juce::uint32) numCh };
+
+    // Quiesce the render thread FIRST: it is the room engine's loading thread
+    // and must not be mid-load while the convolvers re-prepare underneath it.
+    if (renderThread != nullptr)
+        renderThread->drain();
 
     convolution.prepare (sampleRate, samplesPerBlock, numCh);
 
@@ -804,8 +829,12 @@ void WorldizerAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBl
     preDelaySmoothed.reset (sampleRate, 0.05);    // 50 ms ramp (avoids zipper on drag)
     attenuationSmoothed.reset (sampleRate, 0.05);
     const float dist0 = currentDistanceMeters.load();
-    preDelaySmoothed.setCurrentAndTargetValue (distanceModel.computePreDelaySamples (dist0, sampleRate));
-    attenuationSmoothed.setCurrentAndTargetValue (juce::jmax (1.0e-4f, distanceModel.computeAttenuationGain (dist0)));
+    const float preDelay0 = distanceModel.computePreDelaySamples (dist0, sampleRate);
+    const float atten0    = juce::jmax (1.0e-4f, distanceModel.computeAttenuationGain (dist0));
+    preDelaySamplesTarget.store (preDelay0);   // re-seed: pre-delay is in SAMPLES, so it is rate-dependent
+    attenuationTarget.store (atten0);
+    preDelaySmoothed.setCurrentAndTargetValue (preDelay0);
+    attenuationSmoothed.setCurrentAndTargetValue (atten0);
 
     const int scratchLen = juce::jmax (samplesPerBlock, 8192);
     dryScratch.setSize (numCh, scratchLen, false, false, true);
@@ -830,15 +859,76 @@ void WorldizerAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBl
 
     prepared.store (true);
 
-    // Apply the current preset (default on first run, or the restored value): reads
-    // the baked IR from the preset library and swaps it into the convolver — no
-    // rendering. The embedded default IR loaded above already gives instant audio.
-    juce::String desired;
+    // First prepare vs re-prepare — the distinction matters:
+    //  - No live scene yet (cold start, or prepare-before-setState hosts): load
+    //    the current preset fresh.
+    //  - A live scene EXISTS (sample-rate change, re-activation, or a state
+    //    restore that already ran): do NOT reload the preset — setCurrentPresetId
+    //    replaces the live scene with on-disk defaults, clears the dirty flag,
+    //    and reseeds the distance model, silently wiping restored session edits
+    //    and live drags (and making an offline bounce differ from what the user
+    //    auditioned). Instead, re-arm the engine IR (loads attempted before
+    //    prepare were dropped by the engine's prepared gate) and reload the bed
+    //    (its pool and resample rate were just reset).
+    bool haveScene = false;
+    juce::String desired, bedId;
     {
         const juce::ScopedLock sl (presetLock);
-        desired = currentPresetId;
+        haveScene = currentPresetMetadata.has_value();
+        desired   = currentPresetId;
+        bedId     = currentAmbientBedId;
     }
-    setCurrentPresetId (desired, false); // re-apply: keep the session's character/level choices
+
+    if (! haveScene)
+    {
+        setCurrentPresetId (desired, false); // keep the session's character/level choices
+    }
+    else
+    {
+        rearmEngineForCurrentScene();
+        loadAmbientBedById (bedId);
+    }
+}
+
+void WorldizerAudioProcessor::rearmEngineForCurrentScene()
+{
+    if (renderThread == nullptr || presetManager == nullptr)
+        return;
+
+    Worldizer::Scene liveScene;
+    juce::String presetId;
+    Worldizer::RenderThread::RenderedIR cached;
+    {
+        const juce::ScopedLock sl (presetLock);
+        if (! currentPresetMetadata.has_value())
+            return;
+        liveScene = currentPresetMetadata->scene;
+        presetId  = currentPresetId;
+        cached.ir.makeCopyOf (cachedEditedIR.ir);
+        cached.sampleRate     = cachedEditedIR.sampleRate;
+        cached.sceneSignature = cachedEditedIR.sceneSignature;
+    }
+
+    const auto liveSig = Worldizer::RenderThread::sceneSignature (liveScene);
+
+    // Exact match: the cached full-quality IR of this very scene (R8).
+    if (cached.ir.getNumSamples() > 0 && cached.sceneSignature == liveSig)
+    {
+        renderThread->requestIRLoad (cached.ir, cached.sampleRate, 30.0f);
+        return;
+    }
+
+    juce::String err;
+    auto loaded = presetManager->loadPreset (presetId, err);
+    const bool sceneIsPresetDefault =
+        loaded.has_value() && Worldizer::RenderThread::sceneSignature (loaded->scene) == liveSig;
+
+    if (sceneIsPresetDefault && loaded->ir.getNumSamples() > 0)
+        renderThread->requestIRLoad (loaded->ir, loaded->irSampleRate, 30.0f);
+    else
+        renderCurrentScene (true, 80.0f); // edited scene with no cache (or unreadable
+                                          // preset): background re-render from the
+                                          // live geometry — the documented fallback
 }
 
 void WorldizerAudioProcessor::releaseResources()
@@ -911,6 +1001,10 @@ void WorldizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     inputGain.setGainDecibels (inputGainValue->load());
     outputGain.setGainDecibels (outputGainValue->load());
     mixSmoothed.setTargetValue (mixValue->load() * 0.01f);
+    // Distance targets are written atomically by the message thread (drags /
+    // preset loads); the smoothers themselves are audio-thread-only.
+    preDelaySmoothed.setTargetValue (preDelaySamplesTarget.load());
+    attenuationSmoothed.setTargetValue (attenuationTarget.load());
 
     juce::dsp::AudioBlock<float> block (buffer);
 
@@ -952,7 +1046,10 @@ void WorldizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
 
     // 3c. Mic character: mic IR + optional self-noise floor. The mic hears the
     //     room, so this ends the wet chain. Noise is added post-attenuation
-    //     (capsule/electronics noise does not scale with source distance).
+    //     (capsule/electronics noise does not scale with source distance) but IS
+    //     inside the wet/dry mix — deliberate: mix = "how much of the worldized
+    //     signal, capture chain included"; the bed (the SPACE's own tone) is the
+    //     one element that escapes the mix, below.
     micCharacter.setSelfNoise (micNoiseValue->load() * 0.01f);
     micCharacter.process (block);
 
@@ -1027,6 +1124,16 @@ juce::AudioProcessorEditor* WorldizerAudioProcessor::createEditor()
 void WorldizerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
+
+    // Stale-property hygiene: replaceState() imported every custom property of a
+    // previously RESTORED state into apvts.state, and the writes below are
+    // conditional — without clearing first, deleted sector geometry resurrects
+    // on the next restore and a dead cachedIRData blob (up to 8 MB) rides along
+    // in every subsequent save.
+    for (const char* p : { "sectorGeometry", "cachedIRChannels", "cachedIRSamples",
+                           "cachedIRSampleRate", "cachedIRSignature", "cachedIRData",
+                           "currentScene" })
+        state.removeProperty (p, nullptr);
 
     // Fetch the render thread's latest full render BEFORE taking presetLock
     // (each has its own lock; keep the ordering trivial).
@@ -1139,6 +1246,17 @@ void WorldizerAudioProcessor::setStateInformation (const void* data, int sizeInB
             else if (state.hasProperty ("currentScene"))     // migrate Slice 2 sessions
                 presetId = sceneNameToPresetId (state["currentScene"].toString());
 
+            // Missing preset (deleted user preset): fall back to the default and
+            // SKIP the scene overlay — restoring transforms/sectors onto the wrong
+            // room would be a silent franken-state.
+            if (presetId.isNotEmpty() && presetManager != nullptr && ! presetManager->hasPreset (presetId))
+            {
+                juce::Logger::writeToLog ("State references missing preset '" + presetId
+                                          + "'; falling back to " + kDefaultPreset);
+                setCurrentPresetId (kDefaultPreset, false);
+                presetId.clear();
+            }
+
             if (presetId.isNotEmpty())
             {
                 // Load the baked IR at default geometry. false: apvts.replaceState
@@ -1222,12 +1340,25 @@ void WorldizerAudioProcessor::setStateInformation (const void* data, int sizeInB
                     Worldizer::RenderThread::RenderedIR cached;
                     if (state.hasProperty ("cachedIRData"))
                     {
+                        // Bounds-check with 64-bit math BEFORE decoding: JUCE's
+                        // fromBase64Encoding allocates by the embedded size prefix,
+                        // so a corrupted/hostile property could otherwise trigger a
+                        // huge allocation (or int overflow) during project load.
                         const int channels = (int) state["cachedIRChannels"];
                         const int samples  = (int) state["cachedIRSamples"];
+                        const juce::int64 expectedBytes =
+                            (juce::int64) channels * (juce::int64) samples * (juce::int64) sizeof (float);
+                        const auto b64 = state["cachedIRData"].toString();
+                        const juce::int64 declaredBytes =
+                            b64.upToFirstOccurrenceOf (".", false, false).getLargeIntValue();
+
+                        constexpr juce::int64 kMaxCachedBytes = 8 * 1024 * 1024;
                         juce::MemoryBlock raw;
-                        if (channels > 0 && samples > 0
-                            && raw.fromBase64Encoding (state["cachedIRData"].toString())
-                            && (int) raw.getSize() == channels * samples * (int) sizeof (float))
+                        if (channels > 0 && channels <= 2 && samples > 0
+                            && expectedBytes <= kMaxCachedBytes
+                            && declaredBytes == expectedBytes
+                            && raw.fromBase64Encoding (b64)
+                            && (juce::int64) raw.getSize() == expectedBytes)
                         {
                             cached.ir.setSize (channels, samples);
                             const auto* srcData = static_cast<const float*> (raw.getData());

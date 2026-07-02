@@ -16,6 +16,9 @@ namespace
 
 void MicCharacter::prepare (const juce::dsp::ProcessSpec& spec)
 {
+    stopTimer();      // no pending-IR flush may land while the engine re-prepares
+    pending.reset();
+
     sampleRate = spec.sampleRate;
     engine.prepare (spec.sampleRate, (int) spec.maximumBlockSize, (int) spec.numChannels);
 
@@ -38,12 +41,14 @@ void MicCharacter::prepare (const juce::dsp::ProcessSpec& spec)
         d[i] = b0 + b1 + b2 + white * 0.1848f;
     }
 
-    // Seam blend (last 50 ms into the first) then trim, exactly as the baked beds do.
+    // Seam blend (last 50 ms into the first) then trim, exactly as the baked
+    // beds do — equal-power, since head and tail are uncorrelated noise (a
+    // linear blend would dip -3 dB at the seam midpoint every ~2 s).
     const int xf = juce::jmin (n / 4, (int) (spec.sampleRate * 0.05));
     for (int i = 0; i < xf; ++i)
     {
         const float t = (float) i / (float) juce::jmax (1, xf);
-        d[i] = d[i] * t + d[n - xf + i] * (1.0f - t);
+        d[i] = d[i] * std::sqrt (t) + d[n - xf + i] * std::sqrt (1.0f - t);
     }
     noiseLoop.setSize (1, n - xf, true);
 
@@ -94,7 +99,9 @@ void MicCharacter::flushPendingIfIdle()
 {
     if (! prepared || ! pending.has_value() || engine.isIRPending())
         return;
-    engine.loadIR (pending->buffer, pending->sampleRate, kCharacterCrossfadeMs);
+    // normalise=false: character IRs are unit-energy at bake (the "none" delta's
+    // energy is exactly 1), so they pass at unity loudness — see ConvolutionEngine.
+    engine.loadIR (pending->buffer, pending->sampleRate, kCharacterCrossfadeMs, false);
     pending.reset();
 }
 

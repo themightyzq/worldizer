@@ -92,6 +92,26 @@ inline void finishIR (Buffer& mono, double sr, float fadeMs, float peakDb)
         mono.applyGain (juce::Decibels::decibelsToGain (peakDb) / peak);
 }
 
+// Fade-out, then normalise to UNIT ENERGY (sum of h^2 == 1). Character IRs use
+// this so the runtime loads them with Normalise::no and they pass at unity
+// loudness — exactly matching the 1-sample "none" delta, whose energy is 1.
+// (JUCE's own Normalise::yes scales to 0.125/sqrt(E): even a unit delta becomes
+// a fixed -18 dB pad, which is why the character path avoids it.)
+inline void finishCharacterIR (Buffer& mono, double sr, float fadeMs)
+{
+    auto* d = mono.getWritePointer (0);
+    const int n    = mono.getNumSamples();
+    const int fade = juce::jmin (n, (int) (sr * fadeMs * 0.001));
+    for (int i = 0; i < fade; ++i)
+        d[n - 1 - i] *= 0.5f * (1.0f - std::cos (juce::MathConstants<float>::pi * (float) i / (float) fade));
+
+    double energy = 0.0;
+    for (int i = 0; i < n; ++i)
+        energy += (double) d[i] * (double) d[i];
+    if (energy > 0.0)
+        mono.applyGain ((float) (1.0 / std::sqrt (energy)));
+}
+
 //==============================================================================
 /** Speaker character IR for a CharacterLibrary speaker id ("none" -> empty). */
 inline Buffer synthesizeSpeakerIR (const juce::String& id, double sr)
@@ -178,7 +198,7 @@ inline Buffer synthesizeSpeakerIR (const juce::String& id, double sr)
     else
         return Buffer {}; // "none" / unknown
 
-    finishIR (ir, sr, 10.0f, -3.0f);
+    finishCharacterIR (ir, sr, 10.0f);
     return ir;
 }
 
@@ -244,7 +264,7 @@ inline Buffer synthesizeMicIR (const juce::String& id, double sr)
     else
         return Buffer {};
 
-    finishIR (ir, sr, 8.0f, -3.0f);
+    finishCharacterIR (ir, sr, 8.0f);
     return ir;
 }
 
@@ -267,10 +287,15 @@ inline Buffer synthesizeRoomTone (const juce::String& id, double sr, double seco
     {
         return std::sin (twoPi * (cyclesOverLoop * (double) i / (double) n) + phase);
     };
-    // Sum of integer-cycle sine partials (hums).
+    // Sum of integer-cycle sine partials (hums). Cycles are rounded to a
+    // multiple of 32 (= loopLength / seamLength): the seam blend mixes d[i]
+    // with d[i + n - xf], whose phase offset is 2*pi*cycles*(xf/n) = cycles/32
+    // turns — a multiple of 32 makes every partial phase-ALIGNED across the
+    // seam (a 50 Hz hum at 400 cycles would land 180 degrees out and cancel
+    // mid-seam every loop).
     auto addHum = [&] (double freq, float amp, int partials, float partialDecay)
     {
-        const double cycles = std::round (freq * seconds); // integer cycles -> seamless
+        const double cycles = 32.0 * std::round (freq * seconds / 32.0);
         for (int p = 1; p <= partials; ++p)
         {
             const float a = amp * std::pow (partialDecay, (float) (p - 1));
@@ -357,13 +382,15 @@ inline Buffer synthesizeRoomTone (const juce::String& id, double sr, double seco
         return Buffer {};
 
     // Blend the seam: crossfade the last 250 ms into the start, then trim it off.
+    // EQUAL-POWER law: head and tail are uncorrelated noise, so a linear blend
+    // would dip -3 dB at the seam midpoint — a periodic "breath" every loop.
     // (The filters' transient tails at the start are also hidden by this blend
     // region being replaced by steady-state signal.)
     const int xf = juce::jmin (n / 4, (int) (sr * 0.25));
     for (int i = 0; i < xf; ++i)
     {
         const float t = (float) i / (float) xf;
-        d[i] = d[i] * t + d[n - xf + i] * (1.0f - t);
+        d[i] = d[i] * std::sqrt (t) + d[n - xf + i] * std::sqrt (1.0f - t);
     }
     bed.setSize (1, n - xf, true);
 

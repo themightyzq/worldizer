@@ -66,10 +66,13 @@ public:
         tagged with the signature can safely stand in for a re-render. */
     static juce::String sceneSignature (const Scene& scene);
 
-    /** True if a job is pending or running. Message-thread callers that need to
-        touch the engine directly (prepareToPlay's synchronous cold-start load)
-        may only do so when this is false. */
-    bool isBusy() const;
+    /** Discards any pending job, aborts a gated engine hand-off, and BLOCKS until
+        the thread is idle. Call before re-preparing the engine (prepareToPlay):
+        the engine must not be mutated while this thread might be loading into it.
+        The abort also covers the case where audio is stopped (a gated wait on
+        isIRPending() would otherwise never clear). Worst case blocks for the
+        remainder of an in-flight trace (~0.2 s full quality). */
+    void drain();
 
 private:
     void run() override;
@@ -79,7 +82,9 @@ private:
     mutable juce::CriticalSection jobLock;
     std::unique_ptr<Job>  pendingJob;
     juce::WaitableEvent   wakeup;
-    std::atomic<bool>     rendering { false };
+    std::atomic<bool>     rendering { false };  // trace in progress (UI indicator)
+    std::atomic<bool>     busy      { false };  // ANY job in progress (drain gate)
+    std::atomic<bool>     abortWait { false };  // drain(): bail out of gated waits
 
     mutable juce::CriticalSection lastRenderLock;
     RenderedIR lastFullRender;

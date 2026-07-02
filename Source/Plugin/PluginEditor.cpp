@@ -42,6 +42,7 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
     // --- Room view ---
     roomView.setScene (p.getCurrentScene());
     previousScene = p.getCurrentScene();
+    lastSceneRevision = p.getSceneRevision();
     roomView.onSceneEdited = [this] (const Worldizer::Scene& s, bool finalized)
     {
         // Geometry change vs the last committed snapshot? Push the snapshot for undo
@@ -61,6 +62,7 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
 
         positionsModified = true;
         processorRef.applyEditedScene (s, finalized);
+        lastSceneRevision = processorRef.getSceneRevision(); // our own edit — timer must not treat it as external
         // Keep the mic knobs tracking an arrow/icon drag (value-only, no relayout).
         xyAngleSlider.setValue (processorRef.getXYAngleDegrees(), juce::dontSendNotification);
         rotateSlider.setValue (currentRotateAzimuth(), juce::dontSendNotification);
@@ -362,6 +364,11 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
 WorldizerAudioProcessorEditor::~WorldizerAudioProcessorEditor()
 {
     stopTimer();
+    // If the window closes mid-hover in a character picker, the CallOutBox's
+    // restore callback dies with it (SafePointer) — make sure the processor is
+    // not left playing an uncommitted audition IR.
+    processorRef.endSourceCharacterAudition();
+    processorRef.endMicCharacterAudition();
     setLookAndFeel (nullptr);
 }
 
@@ -389,6 +396,7 @@ void WorldizerAudioProcessorEditor::onPresetSelected (const juce::String& preset
 void WorldizerAudioProcessorEditor::refreshRoomViewFromProcessor()
 {
     roomView.setScene (processorRef.getCurrentScene());
+    lastSceneRevision = processorRef.getSceneRevision(); // this change is now reflected
 }
 
 void WorldizerAudioProcessorEditor::applyRotate (float azimuthDeg, bool full)
@@ -482,6 +490,7 @@ void WorldizerAudioProcessorEditor::doUndo()
     auto restored = undoStack.undo();
     previousScene = restored;
     processorRef.applyEditedScene (restored, /*finalized*/ true);
+    lastSceneRevision = processorRef.getSceneRevision();
     roomView.setScene (restored);
     inspector.setScene (restored);
     inspector.setSelection ({});
@@ -532,9 +541,15 @@ void WorldizerAudioProcessorEditor::confirmDiscardThenAsync (std::function<void(
                   .withButton  ("Discard")
                   .withButton  ("Cancel")
                   .withAssociatedComponent (this);
-    juce::AlertWindow::showAsync (opts, [this, onProceed] (int result)
+    // SafePointer: the alert is a desktop window that can outlive the editor
+    // (host closes the plugin window while the prompt is up) — a raw `this`
+    // would be a use-after-free when the user finally clicks.
+    juce::Component::SafePointer<WorldizerAudioProcessorEditor> safeThis (this);
+    juce::AlertWindow::showAsync (opts, [safeThis, onProceed] (int result)
     {
-        if (result == 1) { processorRef.clearDirtyFlag(); onProceed(); }
+        if (safeThis == nullptr)
+            return;
+        if (result == 1) { safeThis->processorRef.clearDirtyFlag(); onProceed(); }
     });
 }
 
@@ -550,16 +565,21 @@ void WorldizerAudioProcessorEditor::onSaveAsButton()
     w->addButton ("Save",   1, juce::KeyPress (juce::KeyPress::returnKey));
     w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
 
-    w->enterModalState (true, juce::ModalCallbackFunction::create ([this, w] (int code)
+    // SafePointer: the dialog can outlive the editor (host closes the plugin
+    // window while it is up) — a raw `this` would dangle.
+    juce::Component::SafePointer<WorldizerAudioProcessorEditor> safeThis (this);
+    w->enterModalState (true, juce::ModalCallbackFunction::create ([safeThis, w] (int code)
     {
         std::unique_ptr<juce::AlertWindow> owner (w);
-        if (code != 1) return;
+        if (code != 1 || safeThis == nullptr)
+            return;
+        auto* self = safeThis.getComponent();
 
         const juce::String name = w->getTextEditor ("name")->getText().trim();
         if (name.isEmpty())
         {
             juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
-                                                    "Save As", "A preset name is required.", "OK", this);
+                                                    "Save As", "A preset name is required.", "OK", self);
             return;
         }
 
@@ -570,20 +590,20 @@ void WorldizerAudioProcessorEditor::onSaveAsButton()
         juce::String err;
         // The user typed the name intentionally — Save As always overwrites a same-named
         // preset. To keep both, pick a different name. (Future polish: ask first.)
-        if (! processorRef.saveCurrentSceneAsPreset (name, cat, desc, tags, /*overwrite*/ true, err))
+        if (! self->processorRef.saveCurrentSceneAsPreset (name, cat, desc, tags, /*overwrite*/ true, err))
         {
             juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
-                "Save failed", err, "OK", this);
+                "Save failed", err, "OK", self);
             return;
         }
 
-        presetBrowser.refreshList();
-        presetBrowser.setSelectedPresetId (processorRef.getCurrentPresetId());
-        refreshRoomViewFromProcessor();
-        previousScene = processorRef.getCurrentScene();
-        undoStack.clear();
-        positionsModified = false;
-        updateSubtitle();
+        self->presetBrowser.refreshList();
+        self->presetBrowser.setSelectedPresetId (self->processorRef.getCurrentPresetId());
+        self->refreshRoomViewFromProcessor();
+        self->previousScene = self->processorRef.getCurrentScene();
+        self->undoStack.clear();
+        self->positionsModified = false;
+        self->updateSubtitle();
     }), false);
 }
 
@@ -669,10 +689,16 @@ void WorldizerAudioProcessorEditor::timerCallback()
     syncPicker (speakerPicker, "sourceCharacter");
     syncPicker (micCharPicker, "micCharacter");
 
-    // Sync the UI if the preset changed outside the browser (e.g. state restore).
-    if (processorRef.getCurrentPresetId() != presetBrowser.getSelectedPresetId())
+    // Sync the UI if the preset changed outside the browser (e.g. state restore),
+    // OR the scene changed under the SAME preset id (state restore with a
+    // different mic config / positions / sectors — the id check alone misses it).
+    // Editor-originated edits record lastSceneRevision at their call sites, so
+    // only out-of-band changes land here.
+    const bool presetChanged = processorRef.getCurrentPresetId() != presetBrowser.getSelectedPresetId();
+    if (presetChanged || processorRef.getSceneRevision() != lastSceneRevision)
     {
-        presetBrowser.setSelectedPresetId (processorRef.getCurrentPresetId());
+        if (presetChanged)
+            presetBrowser.setSelectedPresetId (processorRef.getCurrentPresetId());
         refreshRoomViewFromProcessor();
         syncMicControlsFromProcessor();
         previousScene = processorRef.getCurrentScene();
@@ -680,6 +706,13 @@ void WorldizerAudioProcessorEditor::timerCallback()
         if (editMode) inspector.setScene (previousScene);
         positionsModified = false;
         updateSubtitle();
+    }
+
+    // Sidebar collapse is session state too (restored by setStateInformation).
+    if (presetBrowser.isCollapsed() != processorRef.getSidebarCollapsed())
+    {
+        presetBrowser.setCollapsed (processorRef.getSidebarCollapsed());
+        resized();
     }
 }
 

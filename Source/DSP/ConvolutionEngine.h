@@ -30,8 +30,17 @@ public:
 
     // === IR loading (background / message thread; never the audio thread) ===
     /** Loads a new IR and triggers a crossfade on subsequent process() calls.
-        The buffer is copied, so the caller may release it after this returns. */
-    void loadIR (const juce::AudioBuffer<float>& ir, double irSampleRate, float crossfadeMs = 80.0f);
+        The buffer is copied, so the caller may release it after this returns.
+
+        normalise=true (room IRs): JUCE's energy normalisation (0.125/sqrt(E)) —
+        consistent wet level across scenes, tuned by ear since Slice 2.
+        normalise=false (character IRs): the IRs are pre-normalised to UNIT
+        ENERGY at bake, so characters — including the unit-impulse "none", whose
+        energy is exactly 1 — pass at unity loudness. (JUCE's normalisation
+        scales even a unit delta to 0.125 = -18 dB, which would make each
+        character stage a fixed 18 dB pad and "none" anything but a bypass.) */
+    void loadIR (const juce::AudioBuffer<float>& ir, double irSampleRate,
+                 float crossfadeMs = 80.0f, bool normalise = true);
 
     /** True if a swap is queued or a crossfade is in progress. Callers loading a
         new IR should wait until this is false so they don't clobber the idle
@@ -62,7 +71,7 @@ private:
     double sampleRate   = 48000.0;
     int    maxBlockSize = 512;
     int    numChannels  = 2;
-    bool   prepared     = false;
+    std::atomic<bool> prepared { false }; // written by prepare(), read by loader threads
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ConvolutionEngine)
 };

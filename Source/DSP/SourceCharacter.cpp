@@ -17,6 +17,9 @@ namespace
 
 void SourceCharacter::prepare (const juce::dsp::ProcessSpec& spec)
 {
+    stopTimer();      // no pending-IR flush may land while the engine re-prepares
+    pending.reset();
+
     sampleRate = spec.sampleRate;
     engine.prepare (spec.sampleRate, (int) spec.maximumBlockSize, (int) spec.numChannels);
 
@@ -59,7 +62,9 @@ void SourceCharacter::flushPendingIfIdle()
 {
     if (! prepared || ! pending.has_value() || engine.isIRPending())
         return;
-    engine.loadIR (pending->buffer, pending->sampleRate, kCharacterCrossfadeMs);
+    // normalise=false: character IRs are unit-energy at bake (the "none" delta's
+    // energy is exactly 1), so they pass at unity loudness — see ConvolutionEngine.
+    engine.loadIR (pending->buffer, pending->sampleRate, kCharacterCrossfadeMs, false);
     pending.reset();
 }
 
