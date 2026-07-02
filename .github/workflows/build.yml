@@ -45,8 +45,10 @@ jobs:
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
+      # Explicit job count: bare `--parallel` maps to an unbounded `make -j` with the
+      # Makefile generator, which OOM-killed cc1plus on the Linux runner (exit 143).
       - name: Build
-        run: cmake --build build --config Release --parallel
+        run: cmake --build build --config Release --parallel 4
 
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
