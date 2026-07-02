@@ -31,23 +31,40 @@ vertex to close, then set floor / ceiling heights and per-surface materials in t
 right-side inspector. Hear the space update live as you drag vertices or change
 materials, and **Save As** to add it to your user library.
 
+**Source & mic character + ambient beds (v0.0.7):** pick the *reproducer* the sound
+plays through (telephone handset, guitar cab, megaphone, transistor radio...) and the
+*microphone* that captures the room (ribbon, stage dynamic, carbon button, contact
+mic...) — hover a character in the picker to audition it instantly, click to keep it.
+A **Drive** knob adds light speaker nonlinearity and a **Noise** knob adds mic
+self-noise. Each preset can carry a looped **ambient room-tone bed** (HVAC, city
+rumble, fluorescent buzz...) mixed under the worldized signal at its own level. The
+shipped characters and beds are synthesized placeholders with real recordings to
+follow — the ids and plumbing are final.
+
+**Preset library (v0.0.7):** 25 shipped spaces across Test / Indoor / Outdoor /
+Vehicles & Devices / Cinematic / Experimental — from a closet and a tiled bathroom to
+a cathedral, a canyon, and a deliberately unreal 64 m glass corridor — plus a
+20-material acoustic library (published absorption data) available in the editor.
+
 ## Screenshot
 
-![Worldizer edit mode](Docs/images/screenshot.png)
+![Worldizer browse mode](Docs/images/screenshot.png)
 
-*Edit mode: the sidebar (left), a top-down room view with the tool palette
-(Select / Draw / Delete + 1 m snap + Undo) and a sample sector under edit, and the
-inspector (right) showing sector floor / ceiling heights and materials. The status
-bar reports the current operation. The Edit button glows amber while editing.*
+*Browse mode: the preset browser (left) with real top-down thumbnails, the room view
+with draggable source (amber) and mic (cyan), the gain/mix/audition row, the mic
+array row (config / pattern), and the character row — speaker picker + Drive, mic
+picker + Noise, and the ambient bed level.*
 
 ## Status
 
 > **Pre-alpha — under active development. Not yet ready for production use.**
 
-The project is being built in slices. The acoustics engine, convolution runtime, preset
-library, browse-mode UI, directional/stereo mics, and the Doom-style geometry editor are
-all in place; recorded source/mic character libraries, ambient beds, and the curated
-preset collection are the next slices.
+The project is being built in slices. The acoustics engine, convolution runtime,
+browse-mode UI, directional/stereo mics, the Doom-style geometry editor, the source/mic
+character chain, ambient beds, the 25-preset library, and the 20-material acoustic
+library are all in place. What remains before alpha: replacing the synthesized
+placeholder characters/beds with real recordings, by-ear tuning, and signed/notarized
+release builds.
 
 ## Quick Start (build from source)
 
@@ -65,19 +82,21 @@ git submodule update --init --recursive
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 
-# 3. First-time setup only: bake the shipped presets, then rebuild to embed them.
-#    (A fresh checkout builds fine without this — it just has no preset library yet.)
+# 3. First-time setup only: bake the shipped assets (characters, room tones,
+#    materials.json) and presets, then rebuild to embed them. (A fresh checkout
+#    builds fine without this — it just has no libraries yet.)
+./build/BakeAssets_artefacts/Release/BakeAssets
 ./build/BakePresets_artefacts/Release/BakePresets
 cmake --build build --config Release
 ```
 
 The built artefacts land in `build/Worldizer_artefacts/Release/`. With `COPY_PLUGIN_AFTER_BUILD` enabled, the VST3 is also installed to your user VST3 folder.
 
-**About the preset step:** the shipped presets (`.wzpreset` bundles) are generated
-from the test-scene definitions by the `BakePresets` tool and embedded into the
-plugin. They are not committed to the repo, so on a fresh checkout you run
-`BakePresets` once and rebuild. After that, rebuilds pick the presets up
-automatically. User presets live under your OS user-data directory —
+**About the bake step:** the shipped presets (`.wzpreset` bundles), speaker/mic
+character IRs, and ambient room-tone beds are all generated from in-repo definitions
+by the `BakeAssets` and `BakePresets` tools and embedded into the plugin. They are
+not committed to the repo, so on a fresh checkout you run both once and rebuild.
+After that, rebuilds pick them up automatically. User presets live under your OS user-data directory —
 `~/Library/Application Support/ZQSFX/Worldizer/Presets/` on macOS, `%APPDATA%\ZQSFX\Worldizer\Presets\`
 on Windows, `~/.config/ZQSFX/Worldizer/Presets/` on Linux (drop a `.wzpreset` directory
 there and restart the plugin).
