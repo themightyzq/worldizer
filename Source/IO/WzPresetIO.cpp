@@ -251,6 +251,8 @@ juce::var WzPresetIO::metadataToJson (const Loaded& m)
     o->setProperty ("tags", tags);
 
     o->setProperty ("ambient_bed",              m.ambientBed.isEmpty()             ? juce::var() : juce::var (m.ambientBed));
+    if (m.ambientBed.isNotEmpty())
+        o->setProperty ("ambient_level_db", m.ambientLevelDb);
     o->setProperty ("default_source_character", m.defaultSourceCharacter.isEmpty() ? juce::var() : juce::var (m.defaultSourceCharacter));
     o->setProperty ("default_mic_character",    m.defaultMicCharacter.isEmpty()    ? juce::var() : juce::var (m.defaultMicCharacter));
     o->setProperty ("rendered_at", m.renderedAt);
@@ -278,6 +280,7 @@ void WzPresetIO::metadataFromJson (const juce::var& v, Loaded& m)
             m.tags.add (t.toString());
 
     if (v["ambient_bed"].isString())              m.ambientBed             = v["ambient_bed"].toString();
+    if (v.hasProperty ("ambient_level_db"))       m.ambientLevelDb         = (float) (double) v["ambient_level_db"];
     if (v["default_source_character"].isString()) m.defaultSourceCharacter = v["default_source_character"].toString();
     if (v["default_mic_character"].isString())    m.defaultMicCharacter    = v["default_mic_character"].toString();
 

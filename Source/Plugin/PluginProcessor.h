@@ -5,6 +5,9 @@
 #include <optional>
 #include "../DSP/ConvolutionEngine.h"
 #include "../DSP/DistanceModel.h"
+#include "../DSP/SourceCharacter.h"
+#include "../DSP/MicCharacter.h"
+#include "../DSP/AmbientBed.h"
 #include "RenderThread.h"
 #include "PresetManager.h"
 #include "../Shared/Constants.h"
@@ -18,7 +21,9 @@
     path and trimmed by input/output gain. A pre-baked default IR is embedded so the
     first audio is available immediately on cold start.
 */
-class WorldizerAudioProcessor : public juce::AudioProcessor
+class WorldizerAudioProcessor : public juce::AudioProcessor,
+                                private juce::AudioProcessorValueTreeState::Listener,
+                                private juce::AsyncUpdater
 {
 public:
     WorldizerAudioProcessor();
@@ -57,7 +62,11 @@ public:
     //==============================================================================
     // === Preset selection (presets are .wzpreset bundles loaded by PresetManager) ===
     juce::String getCurrentPresetId() const;
-    void         setCurrentPresetId (const juce::String& presetId);
+    /** Loads a preset. applyCharacterDefaults=true (a USER selection) also applies
+        the preset's default source/mic characters and ambient level; false (state
+        restore / prepareToPlay re-apply) leaves those parameters untouched so a
+        restored session keeps the user's own choices. */
+    void         setCurrentPresetId (const juce::String& presetId, bool applyCharacterDefaults = true);
     juce::StringArray getAvailablePresetIds() const;
     juce::Array<Worldizer::WzPresetIO::Loaded> getAvailablePresetMetadata() const;
     Worldizer::PresetManager& getPresetManager() noexcept { return *presetManager; }
@@ -132,6 +141,16 @@ public:
     [[deprecated ("Use getCurrentPresetId")]] juce::String getCurrentSceneName() const;
     [[deprecated ("Use setCurrentPresetId")]] void setCurrentSceneName (const juce::String& sceneName);
 
+    // === Source / mic character library (Slice 5.5) ===
+    // Selection is the "sourceCharacter"/"micCharacter" choice parameters (indices
+    // into CharacterLibrary::speakers()/mics()). Audition-on-hover loads an IR
+    // directly WITHOUT touching the parameter; ending the audition restores the
+    // committed selection. All message-thread.
+    void auditionSourceCharacter (int index);
+    void endSourceCharacterAudition();
+    void auditionMicCharacter (int index);
+    void endMicCharacterAudition();
+
     // === Built-in audition test signals ===
     /** Triggers a built-in dry test signal to play once through the worldizing
         chain (so a scene can be auditioned without host content). Index matches
@@ -148,6 +167,16 @@ private:
     void updateDryDelayToMatchConvolutionLatency();
     static juce::String sceneNameToPresetId (const juce::String& sceneName);
 
+    // Character / ambient-bed loading (message thread). Parameter changes can
+    // arrive on any thread, so parameterChanged only flags + triggers the async
+    // updater; the actual (allocating) WAV decode happens in handleAsyncUpdate.
+    void parameterChanged (const juce::String& parameterID, float newValue) override;
+    void handleAsyncUpdate() override;
+    void loadSourceCharacterByIndex (int index);
+    void loadMicCharacterByIndex (int index);
+    void loadCharactersFromParams();
+    void loadAmbientBedById (const juce::String& bedId);
+
     /** Applies an edit to the live scene under presetLock, refreshes the distance
         model from the mic-array centre, and requests a re-render. */
     void mutateSceneAndRender (const std::function<void (Worldizer::Scene&)>& edit,
@@ -160,6 +189,18 @@ private:
     Worldizer::ConvolutionEngine convolution;
     std::unique_ptr<Worldizer::PresetManager> presetManager;
     std::unique_ptr<Worldizer::RenderThread> renderThread;
+
+    // === Character chain + ambient bed (Slices 5.5 / 6) ===
+    Worldizer::SourceCharacter sourceCharacter;
+    Worldizer::MicCharacter    micCharacter;
+    Worldizer::AmbientBed      ambientBed;
+    juce::AudioParameterChoice* sourceCharParam = nullptr;
+    juce::AudioParameterChoice* micCharParam    = nullptr;
+    std::atomic<float>* sourceDriveValue  = nullptr;
+    std::atomic<float>* micNoiseValue     = nullptr;
+    std::atomic<float>* ambientLevelValue = nullptr;
+    std::atomic<bool> characterReloadNeeded { false };
+    juce::String currentAmbientBedId; // guarded by presetLock
 
     juce::dsp::Gain<float> inputGain, outputGain;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> mixSmoothed;

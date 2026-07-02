@@ -15,16 +15,16 @@ namespace Worldizer
     // Version
     constexpr int  kVersionMajor       = 0;
     constexpr int  kVersionMinor       = 0;
-    constexpr int  kVersionPatch       = 6;
-    constexpr auto kVersionString      = "0.0.6";
+    constexpr int  kVersionPatch       = 7;
+    constexpr auto kVersionString      = "0.0.7";
 
     // Window
     constexpr int  kDefaultWindowWidth  = 900;
-    constexpr int  kDefaultWindowHeight = 700;  // +50 over Slice 4 for the mic control row
+    constexpr int  kDefaultWindowHeight = 760;  // +56 over Slice 5 for the character/ambient row
     constexpr int  kMinWindowWidth      = 700;
-    constexpr int  kMinWindowHeight     = 550;
+    constexpr int  kMinWindowHeight     = 610;
     constexpr int  kMaxWindowWidth      = 1400;
-    constexpr int  kMaxWindowHeight     = 1000;
+    constexpr int  kMaxWindowHeight     = 1060;
 
     // DSP
     constexpr int  kMaxIRLengthSeconds  = 6;

@@ -3,6 +3,7 @@
 #include "WorldizerBinaryData.h"
 #include "../DSP/RayTracer.h"
 #include "../DSP/IRBuilder.h"
+#include "../DSP/CharacterLibrary.h"
 #include "../UI/RoomView2D.h"
 #include <cmath>
 
@@ -104,13 +105,24 @@ WorldizerAudioProcessor::WorldizerAudioProcessor()
     bypassParam = dynamic_cast<juce::AudioParameterBool*> (apvts.getParameter ("bypass"));
     jassert (bypassParam != nullptr);
 
+    sourceCharParam = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter ("sourceCharacter"));
+    micCharParam    = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter ("micCharacter"));
+    jassert (sourceCharParam != nullptr && micCharParam != nullptr);
+    apvts.addParameterListener ("sourceCharacter", this);
+    apvts.addParameterListener ("micCharacter", this);
+
     presetManager = std::make_unique<PresetManager>();
     presetManager->rescan();
 
     renderThread = std::make_unique<RenderThread> (convolution);
 }
 
-WorldizerAudioProcessor::~WorldizerAudioProcessor() = default;
+WorldizerAudioProcessor::~WorldizerAudioProcessor()
+{
+    apvts.removeParameterListener ("sourceCharacter", this);
+    apvts.removeParameterListener ("micCharacter", this);
+    cancelPendingUpdate();
+}
 
 //==============================================================================
 juce::AudioProcessorValueTreeState::ParameterLayout WorldizerAudioProcessor::createParameterLayout()
@@ -138,8 +150,98 @@ juce::AudioProcessorValueTreeState::ParameterLayout WorldizerAudioProcessor::cre
         juce::AudioParameterFloatAttributes().withStringFromValueFunction (
             [] (float v, int) { return juce::String (v, 1) + " %"; })));
 
+    auto pctString = [] (float v, int) { return juce::String (v, 1) + " %"; };
+
+    // === Slice 5.5: source/mic character chain ===
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { "sourceCharacter", 1 }, "Speaker",
+        Worldizer::CharacterLibrary::speakerNames(), 0));
+
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { "sourceDrive", 1 }, "Drive",
+        juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f,
+        juce::AudioParameterFloatAttributes().withStringFromValueFunction (pctString)));
+
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { "micCharacter", 1 }, "Microphone",
+        Worldizer::CharacterLibrary::micNames(), 0));
+
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { "micNoise", 1 }, "Self-Noise",
+        juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f,
+        juce::AudioParameterFloatAttributes().withStringFromValueFunction (pctString)));
+
+    // === Slice 6: ambient bed level ===
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { "ambientLevel", 1 }, "Ambient",
+        juce::NormalisableRange<float> (-60.0f, 0.0f, 0.1f), -20.0f,
+        juce::AudioParameterFloatAttributes().withStringFromValueFunction (
+            [] (float v, int) { return v <= -59.5f ? juce::String ("Off") : juce::String (v, 1) + " dB"; })));
+
     return layout;
 }
+
+//==============================================================================
+// === Character library loading (Slice 5.5) + ambient bed (Slice 6) ===
+
+void WorldizerAudioProcessor::parameterChanged (const juce::String&, float)
+{
+    // May fire on the audio thread (host automation). Defer the (allocating) WAV
+    // decode to the message thread.
+    characterReloadNeeded.store (true);
+    triggerAsyncUpdate();
+}
+
+void WorldizerAudioProcessor::handleAsyncUpdate()
+{
+    if (characterReloadNeeded.exchange (false))
+        loadCharactersFromParams();
+}
+
+void WorldizerAudioProcessor::loadSourceCharacterByIndex (int index)
+{
+    const auto& defs = Worldizer::CharacterLibrary::speakers();
+    juce::AudioBuffer<float> ir;
+    double sr = 48000.0;
+    if (index > 0 && index < (int) defs.size()
+        && Worldizer::CharacterLibrary::loadSpeakerIR (defs[(size_t) index].id, ir, sr))
+        sourceCharacter.setIR (std::move (ir), sr);
+    else
+        sourceCharacter.setNone();
+}
+
+void WorldizerAudioProcessor::loadMicCharacterByIndex (int index)
+{
+    const auto& defs = Worldizer::CharacterLibrary::mics();
+    juce::AudioBuffer<float> ir;
+    double sr = 48000.0;
+    if (index > 0 && index < (int) defs.size()
+        && Worldizer::CharacterLibrary::loadMicIR (defs[(size_t) index].id, ir, sr))
+        micCharacter.setIR (std::move (ir), sr);
+    else
+        micCharacter.setNone();
+}
+
+void WorldizerAudioProcessor::loadCharactersFromParams()
+{
+    loadSourceCharacterByIndex (sourceCharParam != nullptr ? sourceCharParam->getIndex() : 0);
+    loadMicCharacterByIndex    (micCharParam    != nullptr ? micCharParam->getIndex()    : 0);
+}
+
+void WorldizerAudioProcessor::loadAmbientBedById (const juce::String& bedId)
+{
+    juce::AudioBuffer<float> bed;
+    double sr = 48000.0;
+    if (bedId.isNotEmpty() && Worldizer::CharacterLibrary::loadRoomTone (bedId, bed, sr))
+        ambientBed.setSample (bed, sr);
+    else
+        ambientBed.clearSample();
+}
+
+void WorldizerAudioProcessor::auditionSourceCharacter (int index)    { loadSourceCharacterByIndex (index); }
+void WorldizerAudioProcessor::endSourceCharacterAudition()           { loadSourceCharacterByIndex (sourceCharParam != nullptr ? sourceCharParam->getIndex() : 0); }
+void WorldizerAudioProcessor::auditionMicCharacter (int index)       { loadMicCharacterByIndex (index); }
+void WorldizerAudioProcessor::endMicCharacterAudition()              { loadMicCharacterByIndex (micCharParam != nullptr ? micCharParam->getIndex() : 0); }
 
 //==============================================================================
 juce::String WorldizerAudioProcessor::sceneNameToPresetId (const juce::String& s)
@@ -173,7 +275,7 @@ std::optional<Worldizer::WzPresetIO::Loaded> WorldizerAudioProcessor::getCurrent
     return currentPresetMetadata;
 }
 
-void WorldizerAudioProcessor::setCurrentPresetId (const juce::String& presetId)
+void WorldizerAudioProcessor::setCurrentPresetId (const juce::String& presetId, bool applyCharacterDefaults)
 {
     if (presetManager == nullptr || ! presetManager->hasPreset (presetId))
     {
@@ -193,9 +295,32 @@ void WorldizerAudioProcessor::setCurrentPresetId (const juce::String& presetId)
         const juce::ScopedLock sl (presetLock);
         currentPresetId = presetId;
         currentPresetMetadata = loaded->withoutIR();
+        currentAmbientBedId = loaded->ambientBed;
     }
     // Fresh preset load => no uncommitted edits relative to its on-disk defaults.
     dirtyFlag.store (false);
+
+    // Ambient bed follows the preset (crossfades in the audio thread). Character
+    // defaults are only applied on USER preset selection — never on state restore
+    // or prepareToPlay re-apply, which must preserve the session's own choices.
+    loadAmbientBedById (loaded->ambientBed);
+    if (applyCharacterDefaults)
+    {
+        auto setChoice = [] (juce::AudioParameterChoice* param, int index)
+        {
+            if (param != nullptr && index >= 0)
+                param->setValueNotifyingHost (param->convertTo0to1 ((float) index));
+        };
+        if (loaded->defaultSourceCharacter.isNotEmpty())
+            setChoice (sourceCharParam, Worldizer::CharacterLibrary::speakerIndexForId (loaded->defaultSourceCharacter));
+        if (loaded->defaultMicCharacter.isNotEmpty())
+            setChoice (micCharParam, Worldizer::CharacterLibrary::micIndexForId (loaded->defaultMicCharacter));
+
+        if (loaded->ambientBed.isNotEmpty())
+            if (auto* p = apvts.getParameter ("ambientLevel"))
+                p->setValueNotifyingHost (p->getNormalisableRange().convertTo0to1 (
+                    juce::jlimit (-60.0f, 0.0f, loaded->ambientLevelDb)));
+    }
 
     // Seed the distance model from the preset's default source/mic spacing. The
     // attenuation REFERENCE is set to this default distance, so the preset plays at
@@ -216,8 +341,10 @@ void WorldizerAudioProcessor::setCurrentPresetId (const juce::String& presetId)
 
     if (loaded->ir.getNumSamples() > 0)
     {
-        // A preset load is a file read + convolver swap — no render thread involved.
-        convolution.loadIR (loaded->ir, loaded->irSampleRate, 80.0f);
+        // A preset load is a file read + convolver swap — no tracing. It still goes
+        // THROUGH the render thread so the engine only ever has one loading thread
+        // (see RenderThread header: the convolver's command queue is single-producer).
+        renderThread->requestIRLoad (loaded->ir, loaded->irSampleRate, 80.0f);
     }
     else
     {
@@ -616,7 +743,15 @@ void WorldizerAudioProcessor::loadEmbeddedDefaultIR()
     {
         juce::AudioBuffer<float> ir ((int) reader->numChannels, (int) reader->lengthInSamples);
         reader->read (&ir, 0, (int) reader->lengthInSamples, 0, true, true);
-        convolution.loadIR (ir, reader->sampleRate, 5.0f); // short crossfade — nothing audible to fade from
+
+        // Synchronous load for instant cold-start audio — but only when the render
+        // thread has no work (it is the engine's one sanctioned loading thread; on
+        // a true cold start it is always idle). If it is busy (e.g. prepareToPlay
+        // re-entry on a sample-rate change mid-render), queue instead of racing.
+        if (renderThread == nullptr || ! renderThread->isBusy())
+            convolution.loadIR (ir, reader->sampleRate, 5.0f); // nothing audible to fade from
+        else
+            renderThread->requestIRLoad (ir, reader->sampleRate, 5.0f);
     }
 }
 
@@ -627,6 +762,12 @@ void WorldizerAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBl
     const juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32) samplesPerBlock, (juce::uint32) numCh };
 
     convolution.prepare (sampleRate, samplesPerBlock, numCh);
+
+    // Character chain + ambient bed (wet path; see processBlock chain order).
+    sourceCharacter.prepare (spec);
+    micCharacter.prepare (spec);
+    ambientBed.prepare (spec);
+    loadCharactersFromParams(); // convolvers were just reset to identity
 
     inputGain.prepare (spec);   inputGain.setRampDurationSeconds (0.02);
     outputGain.prepare (spec);  outputGain.setRampDurationSeconds (0.02);
@@ -658,10 +799,13 @@ void WorldizerAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBl
     activeTestSignal = -1;
     testSignalRequested.store (-1);
 
-    bypassValue     = apvts.getRawParameterValue ("bypass");
-    inputGainValue  = apvts.getRawParameterValue ("inputGain");
-    outputGainValue = apvts.getRawParameterValue ("outputGain");
-    mixValue        = apvts.getRawParameterValue ("mix");
+    bypassValue      = apvts.getRawParameterValue ("bypass");
+    inputGainValue   = apvts.getRawParameterValue ("inputGain");
+    outputGainValue  = apvts.getRawParameterValue ("outputGain");
+    mixValue         = apvts.getRawParameterValue ("mix");
+    sourceDriveValue = apvts.getRawParameterValue ("sourceDrive");
+    micNoiseValue    = apvts.getRawParameterValue ("micNoise");
+    ambientLevelValue = apvts.getRawParameterValue ("ambientLevel");
 
     // Instant first audio: load the embedded default IR synchronously.
     loadEmbeddedDefaultIR();
@@ -677,13 +821,16 @@ void WorldizerAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBl
         const juce::ScopedLock sl (presetLock);
         desired = currentPresetId;
     }
-    setCurrentPresetId (desired);
+    setCurrentPresetId (desired, false); // re-apply: keep the session's character/level choices
 }
 
 void WorldizerAudioProcessor::releaseResources()
 {
     prepared.store (false);
     convolution.reset();
+    sourceCharacter.reset();
+    micCharacter.reset();
+    ambientBed.reset();
 }
 
 bool WorldizerAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -757,6 +904,12 @@ void WorldizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     for (int ch = 0; ch < numCh; ++ch)
         dryScratch.copyFrom (ch, 0, buffer, ch, 0, numSamples);
 
+    // 2b. Source (speaker) character: light drive + speaker IR. The reproducer
+    //     plays INTO the room, so this precedes the room convolution — order
+    //     matters because the drive stage is nonlinear.
+    sourceCharacter.setDrive (sourceDriveValue->load() * 0.01f);
+    sourceCharacter.process (block);
+
     // 3. Wet path: convolution in place.
     convolution.process (block);
 
@@ -779,6 +932,12 @@ void WorldizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         for (int i = 0; i < numSamples; ++i)
             w[i] *= attenRamp[(size_t) i];
     }
+
+    // 3c. Mic character: mic IR + optional self-noise floor. The mic hears the
+    //     room, so this ends the wet chain. Noise is added post-attenuation
+    //     (capsule/electronics noise does not scale with source distance).
+    micCharacter.setSelfNoise (micNoiseValue->load() * 0.01f);
+    micCharacter.process (block);
 
     // 4. Dry path: latency-match to the convolver (usually zero -> skip).
     if (currentDryDelaySamples > 0)
@@ -804,6 +963,15 @@ void WorldizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
             const float m = mixRamp[(size_t) i];
             wet[i] = wet[i] * m + dry[i] * (1.0f - m);
         }
+    }
+
+    // 5b. Ambient bed: the space's own room tone, layered under the mix. Not
+    //     scaled by the mix knob (the bed belongs to the SPACE, not the wet/dry
+    //     blend of the source) but rides output gain + the safety ceiling.
+    {
+        const float bedDb = ambientLevelValue->load();
+        ambientBed.setLevel (bedDb <= -59.5f ? 0.0f : juce::Decibels::decibelsToGain (bedDb));
+        ambientBed.addToBuffer (buffer);
     }
 
     // 6. Output gain.
@@ -914,7 +1082,10 @@ void WorldizerAudioProcessor::setStateInformation (const void* data, int sizeInB
 
             if (presetId.isNotEmpty())
             {
-                setCurrentPresetId (presetId);  // loads the baked IR at default geometry
+                // Load the baked IR at default geometry. false: apvts.replaceState
+                // above already restored the session's character/ambient choices —
+                // the preset's defaults must not clobber them.
+                setCurrentPresetId (presetId, false);
 
                 // Reconstruct the saved source + mic array onto the (default) live
                 // scene, then only re-render if it differs from the preset default

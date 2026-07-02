@@ -34,6 +34,7 @@ public:
         juce::String      author;
         juce::StringArray tags;
         juce::String      ambientBed;             // may be empty
+        float             ambientLevelDb = -20.0f; // default bed level when ambientBed set
         juce::String      defaultSourceCharacter; // may be empty
         juce::String      defaultMicCharacter;    // may be empty
 

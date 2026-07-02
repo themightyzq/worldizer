@@ -6,7 +6,9 @@ if(APPLE)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15" CACHE STRING "Minimum macOS deployment target")
 endif()
 
-project(Worldizer VERSION 0.0.1)
+# Keep in sync with Source/Shared/Constants.h kVersionString (this is the version
+# JUCE reports to hosts).
+project(Worldizer VERSION 0.0.7)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -95,10 +97,13 @@ target_sources(Worldizer
         Source/Model/SectorGeometry.h
         Source/Model/SectorGeometry.cpp
 
-        # --- DSP (engine: RayTracer/IRBuilder/AirAbsorption implemented; rest stubs) ---
+        # --- DSP (ImageSourceSolver is the one remaining deferred stub) ---
         Source/DSP/AirAbsorption.h
         Source/DSP/AirAbsorption.cpp
         Source/DSP/AmbientBed.h
+        Source/DSP/AmbientBed.cpp
+        Source/DSP/CharacterLibrary.h
+        Source/DSP/CharacterLibrary.cpp
         Source/DSP/ConvolutionEngine.h
         Source/DSP/ConvolutionEngine.cpp
         Source/DSP/DistanceModel.h
@@ -106,9 +111,11 @@ target_sources(Worldizer
         Source/DSP/IRBuilder.h
         Source/DSP/IRBuilder.cpp
         Source/DSP/MicCharacter.h
+        Source/DSP/MicCharacter.cpp
         Source/DSP/RayTracer.h
         Source/DSP/RayTracer.cpp
         Source/DSP/SourceCharacter.h
+        Source/DSP/SourceCharacter.cpp
 
         # --- IO ---
         Source/IO/WzPresetIO.h
@@ -125,6 +132,8 @@ target_sources(Worldizer
         Source/UI/InspectorPanel.cpp
         Source/UI/DrawingState.h
         Source/UI/UndoStack.h
+        Source/UI/CharacterPicker.h
+        Source/UI/CharacterPicker.cpp
 )
 
 target_include_directories(Worldizer
@@ -182,6 +191,44 @@ if(WZ_PRESET_PKGS)
 else()
     target_compile_definitions(Worldizer PRIVATE WORLDIZER_HAS_SHIPPED_PRESETS=0)
 endif()
+
+# Shipped character IRs + room-tone beds: embed Resources/{Speakers,Mics,RoomTones}
+# WAVs if they exist (run BakeAssets once to create them — same optional-embedding
+# pattern as the presets above). The spk_/mic_/amb_ filename prefixes keep the
+# binary-data symbols collision-free within the single target.
+file(GLOB WZ_CHARACTER_WAVS CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/Resources/Speakers/*.wav"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Resources/Mics/*.wav"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Resources/RoomTones/*.wav")
+if(WZ_CHARACTER_WAVS)
+    juce_add_binary_data(WorldizerCharacters
+        HEADER_NAME "WorldizerCharacters.h"
+        NAMESPACE   "WorldizerCharacters"
+        SOURCES     ${WZ_CHARACTER_WAVS})
+    target_link_libraries(Worldizer PRIVATE WorldizerCharacters)
+    target_compile_definitions(Worldizer PRIVATE WORLDIZER_HAS_CHARACTERS=1)
+else()
+    target_compile_definitions(Worldizer PRIVATE WORLDIZER_HAS_CHARACTERS=0)
+endif()
+
+# === Slice 5.5 / 6: placeholder asset baking CLI tool (speakers/mics/room tones) ===
+juce_add_console_app(BakeAssets PRODUCT_NAME "BakeAssets")
+juce_generate_juce_header(BakeAssets)
+target_sources(BakeAssets
+    PRIVATE
+        Tools/bake_assets/bake_assets.cpp
+        Source/DSP/CharacterLibrary.cpp
+)
+target_compile_definitions(BakeAssets PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(BakeAssets
+    PRIVATE
+        juce::juce_audio_formats
+        juce::juce_audio_basics
+        juce::juce_core
+        juce::juce_dsp
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
 
 # === Slice 3: preset baking CLI tool ===
 juce_add_console_app(BakePresets
@@ -454,6 +501,43 @@ target_link_libraries(StereoIRTest
         juce::juce_recommended_warning_flags
 )
 
+# === Slice 5.5: character library spectral verification ===
+juce_add_console_app(CharacterTest PRODUCT_NAME "CharacterTest")
+juce_generate_juce_header(CharacterTest)
+target_sources(CharacterTest
+    PRIVATE
+        Tests/character_test.cpp
+        Source/DSP/CharacterLibrary.cpp
+)
+target_compile_definitions(CharacterTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(CharacterTest
+    PRIVATE
+        juce::juce_audio_formats
+        juce::juce_audio_basics
+        juce::juce_core
+        juce::juce_dsp
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
+# === Slice 6: ambient bed loop/swap verification ===
+juce_add_console_app(AmbientBedTest PRODUCT_NAME "AmbientBedTest")
+juce_generate_juce_header(AmbientBedTest)
+target_sources(AmbientBedTest
+    PRIVATE
+        Tests/ambient_bed_test.cpp
+        Source/DSP/AmbientBed.cpp
+)
+target_compile_definitions(AmbientBedTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(AmbientBedTest
+    PRIVATE
+        juce::juce_audio_basics
+        juce::juce_core
+        juce::juce_dsp
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
 # === Test registration (CTest) ===
 # Wire the assertion-based console tests into CTest so `ctest` (locally and in CI)
 # runs them. Each returns 0 on pass / nonzero on fail (e.g. `return ok ? 0 : 1`).
@@ -466,6 +550,8 @@ foreach(wz_test
         DistanceTest
         MicMoveTest
         DirectionalityTest
-        StereoIRTest)
+        StereoIRTest
+        CharacterTest
+        AmbientBedTest)
     add_test(NAME ${wz_test} COMMAND ${wz_test})
 endforeach()

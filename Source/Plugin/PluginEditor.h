@@ -8,6 +8,7 @@
 #include "../UI/EditorToolPalette.h"
 #include "../UI/InspectorPanel.h"
 #include "../UI/UndoStack.h"
+#include "../UI/CharacterPicker.h"
 
 /**
     Worldizer — Slice 4 editor. Top-down RoomView2D centrepiece, collapsible preset
@@ -65,12 +66,20 @@ private:
     juce::ComboBox micConfigCombo, micPatternCombo;
     juce::Slider   xyAngleSlider, rotateSlider;
 
+    // Control row 3 (Slices 5.5/6): character pickers + drive/noise/ambient knobs
+    juce::Label  speakerSectionLabel, micCharSectionLabel, ambientSectionLabel;
+    Worldizer::CharacterPicker speakerPicker { Worldizer::CharacterLibrary::speakers() };
+    Worldizer::CharacterPicker micCharPicker { Worldizer::CharacterLibrary::mics() };
+    juce::Slider driveSlider, noiseSlider, ambientSlider;
+    juce::Label  driveLabel, noiseLabel, ambientLabel;
+
     // Footer
     juce::HyperlinkButton githubLink;
 
-    juce::Rectangle<int> controlRowBounds;  // whole control area (rows 1+2)
+    juce::Rectangle<int> controlRowBounds;  // whole control area (rows 1+2+3)
     juce::Rectangle<int> knobRowBounds;     // row 1 only (cluster dividers)
     juce::Rectangle<int> micRowBounds;      // row 2 only (MIC section)
+    juce::Rectangle<int> characterRowBounds; // row 3 (SPEAKER / MIC CHARACTER / AMBIENT)
     bool positionsModified = false;
 
     // === Edit-mode UI (Slice 6a) ===
@@ -81,7 +90,8 @@ private:
     juce::Label                  statusBar;
     Worldizer::Scene             previousScene; // snapshot for the next undo push
 
-    std::unique_ptr<juce::SliderParameterAttachment> inputGainAttach, mixAttach, outputGainAttach;
+    std::unique_ptr<juce::SliderParameterAttachment> inputGainAttach, mixAttach, outputGainAttach,
+                                                     driveAttach, noiseAttach, ambientAttach;
     std::unique_ptr<juce::ButtonParameterAttachment> bypassAttach;
 
     juce::TooltipWindow tooltipWindow { this, 500 };

@@ -59,3 +59,8 @@ Makefile
 *.xcworkspace/
 xcuserdata/
 DerivedData/
+
+# Baked placeholder assets — regenerable via BakeAssets (same policy as EmbeddedPresets)
+Resources/Speakers/*.wav
+Resources/Mics/*.wav
+Resources/RoomTones/*.wav

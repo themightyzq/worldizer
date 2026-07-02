@@ -27,6 +27,21 @@ void RenderThread::requestRender (const Job& job)
     wakeup.signal();
 }
 
+void RenderThread::requestIRLoad (const juce::AudioBuffer<float>& ir, double irSampleRate, float crossfadeMs)
+{
+    Job job;
+    job.bakedIR           = ir;
+    job.bakedIRSampleRate = irSampleRate;
+    job.crossfadeMs       = crossfadeMs;
+    requestRender (job);
+}
+
+bool RenderThread::isBusy() const
+{
+    const juce::ScopedLock sl (jobLock);
+    return rendering.load() || pendingJob != nullptr;
+}
+
 void RenderThread::run()
 {
     while (! threadShouldExit())
@@ -44,6 +59,17 @@ void RenderThread::run()
 
         if (job == nullptr)
             continue;
+
+        // Pre-baked IR: no trace, just the gated hand-off (fast, so no
+        // "rendering..." indicator).
+        if (job->bakedIR.getNumSamples() > 0)
+        {
+            while (engine.isIRPending() && ! threadShouldExit())
+                juce::Thread::sleep (2);
+            if (! threadShouldExit())
+                engine.loadIR (job->bakedIR, job->bakedIRSampleRate, job->crossfadeMs);
+            continue;
+        }
 
         rendering.store (true);
 

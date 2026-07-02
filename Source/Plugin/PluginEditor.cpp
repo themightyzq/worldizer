@@ -212,6 +212,59 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
 
     syncMicControlsFromProcessor();
 
+    // --- Character row (Slice 5.5) + ambient level (Slice 6) ---
+    makeSectionLabel (speakerSectionLabel, "SPEAKER", 12.0f, Col::primary);
+    makeSectionLabel (micCharSectionLabel, "MIC",     12.0f, Col::primary);
+    makeSectionLabel (ambientSectionLabel, "AMBIENT", 12.0f, Col::primary);
+
+    // Pickers: hover = instant audition (the character convolver crossfades
+    // internally); click = commit to the parameter; close = restore committed.
+    auto wireCharacterPicker = [this] (Worldizer::CharacterPicker& picker, const char* paramId,
+                                       std::function<void (int)> audition, std::function<void()> endAudition)
+    {
+        auto* param = dynamic_cast<juce::AudioParameterChoice*> (processorRef.apvts.getParameter (paramId));
+        jassert (param != nullptr);
+        picker.setSelectedIndex (param->getIndex());
+        picker.onSelected = [param] (int index)
+        {
+            param->beginChangeGesture();
+            param->setValueNotifyingHost (param->convertTo0to1 ((float) index));
+            param->endChangeGesture();
+        };
+        picker.onAudition    = std::move (audition);
+        picker.onAuditionEnd = std::move (endAudition);
+        addAndMakeVisible (picker);
+    };
+    wireCharacterPicker (speakerPicker, "sourceCharacter",
+                         [this] (int i) { processorRef.auditionSourceCharacter (i); },
+                         [this] { processorRef.endSourceCharacterAudition(); });
+    wireCharacterPicker (micCharPicker, "micCharacter",
+                         [this] (int i) { processorRef.auditionMicCharacter (i); },
+                         [this] { processorRef.endMicCharacterAudition(); });
+
+    // Small knobs matching the mic-row style.
+    auto setupSmallKnob = [this] (juce::Slider& s, juce::Label& l, const juce::String& name, const juce::String& tip)
+    {
+        s.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+        s.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 56, 16);
+        s.setTooltip (tip);
+        addAndMakeVisible (s);
+        l.setText (name, juce::dontSendNotification);
+        l.setColour (juce::Label::textColourId, Col::onSurfaceVariant);
+        l.setFont (juce::Font (juce::FontOptions (11.0f).withStyle ("Bold")));
+        l.setJustificationType (juce::Justification::centredLeft);
+        addAndMakeVisible (l);
+    };
+    setupSmallKnob (driveSlider,   driveLabel,   "Drive",
+                    "Light speaker nonlinearity - gently saturates the reproducer before the room.");
+    setupSmallKnob (noiseSlider,   noiseLabel,   "Noise",
+                    "Microphone self-noise floor added to the wet path.");
+    setupSmallKnob (ambientSlider, ambientLabel, "Bed",
+                    "Level of the preset's ambient room-tone bed (Off = no bed).");
+    driveAttach   = std::make_unique<juce::SliderParameterAttachment> (*p.apvts.getParameter ("sourceDrive"),  driveSlider);
+    noiseAttach   = std::make_unique<juce::SliderParameterAttachment> (*p.apvts.getParameter ("micNoise"),     noiseSlider);
+    ambientAttach = std::make_unique<juce::SliderParameterAttachment> (*p.apvts.getParameter ("ambientLevel"), ambientSlider);
+
     // === Edit-mode UI wiring (Slice 6a) — components are hidden until setEditMode(true) ===
     addChildComponent (editorTools);
     editorTools.onToolChanged = [this] (auto t) { roomView.setTool (t); updateStatusBar(); };
@@ -605,6 +658,17 @@ void WorldizerAudioProcessorEditor::timerCallback()
     if (renderingIndicator.isVisible() != r)
         renderingIndicator.setVisible (r);
 
+    // Keep the character pickers tracking the parameters (automation, preset
+    // defaults, state restore) — cheap: setSelectedIndex only repaints on change.
+    auto syncPicker = [this] (Worldizer::CharacterPicker& picker, const char* paramId)
+    {
+        if (auto* param = dynamic_cast<juce::AudioParameterChoice*> (processorRef.apvts.getParameter (paramId)))
+            if (param->getIndex() != picker.getSelectedIndex())
+                picker.setSelectedIndex (param->getIndex());
+    };
+    syncPicker (speakerPicker, "sourceCharacter");
+    syncPicker (micCharPicker, "micCharacter");
+
     // Sync the UI if the preset changed outside the browser (e.g. state restore).
     if (processorRef.getCurrentPresetId() != presetBrowser.getSelectedPresetId())
     {
@@ -650,6 +714,7 @@ void WorldizerAudioProcessorEditor::paint (juce::Graphics& g)
         g.drawVerticalLine (x2, (float) knobRowBounds.getY() + 8, (float) knobRowBounds.getBottom() - 8);
 
         g.drawHorizontalLine (micRowBounds.getY(), 8.0f, (float) getWidth() - 8.0f);
+        g.drawHorizontalLine (characterRowBounds.getY(), 8.0f, (float) getWidth() - 8.0f);
     }
 }
 
@@ -665,10 +730,11 @@ void WorldizerAudioProcessorEditor::resized()
     auto footer = area.removeFromBottom (24);
     githubLink.setBounds (footer.removeFromRight (260).reduced (8, 4));
 
-    // Control area: gain row (top) + mic row (bottom).
-    controlRowBounds = area.removeFromBottom (150);
-    knobRowBounds = controlRowBounds.withHeight (86);
-    micRowBounds  = controlRowBounds.withTrimmedTop (86);
+    // Control area: gain row + mic row + character row.
+    controlRowBounds   = area.removeFromBottom (206);
+    knobRowBounds      = controlRowBounds.withHeight (86);
+    micRowBounds       = controlRowBounds.withTrimmedTop (86).withHeight (64);
+    characterRowBounds = controlRowBounds.withTrimmedTop (150);
 
     {
         auto cr = knobRowBounds.reduced (12, 10);
@@ -721,6 +787,28 @@ void WorldizerAudioProcessorEditor::resized()
         };
         knobCol (xyAngleLabel, xyAngleSlider, 60);
         knobCol (rotateLabel,  rotateSlider,  64);
+    }
+
+    // Character row: [SPEAKER] picker  Drive | [MIC] picker  Noise | [AMBIENT] Bed
+    {
+        auto chr = characterRowBounds.reduced (12, 6);
+
+        auto pickerCol = [&chr] (juce::Label& section, Worldizer::CharacterPicker& picker,
+                                 juce::Label& knobLabel, juce::Slider& knob, int sectionW, int pickerW)
+        {
+            section.setBounds (chr.removeFromLeft (sectionW).withTrimmedTop (8));
+            picker.setBounds (chr.removeFromLeft (pickerW).withSizeKeepingCentre (pickerW, 26));
+            chr.removeFromLeft (10);
+            knobLabel.setBounds (chr.removeFromLeft (44).withTrimmedTop (8));
+            knob.setBounds (chr.removeFromLeft (52));
+            chr.removeFromLeft (18);
+        };
+        pickerCol (speakerSectionLabel, speakerPicker, driveLabel, driveSlider, 70, 150);
+        pickerCol (micCharSectionLabel, micCharPicker, noiseLabel, noiseSlider, 40, 150);
+
+        ambientSectionLabel.setBounds (chr.removeFromLeft (72).withTrimmedTop (8));
+        ambientLabel.setBounds (chr.removeFromLeft (34).withTrimmedTop (8));
+        ambientSlider.setBounds (chr.removeFromLeft (52));
     }
 
     // Sidebar + (edit-mode panels) + room view fill the rest.
