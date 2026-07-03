@@ -66,3 +66,7 @@ DerivedData/
 Resources/Speakers/*.wav
 Resources/Mics/*.wav
 Resources/RoomTones/*.wav
+
+# Internal review docs (Diversion-only; produced by the QA/UX review prompts)
+/REVIEW-QA.md
+/REVIEW-UX.md
