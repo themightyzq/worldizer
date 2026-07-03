@@ -155,7 +155,7 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
     // Pattern selector — ids: 1 Omni, 2 Shotgun.
     micPatternCombo.addItem ("Omni",    1);
     micPatternCombo.addItem ("Shotgun", 2);
-    micPatternCombo.setTooltip ("Mic polar pattern. Shotgun has a narrow forward lobe — rotate it with the arrow.");
+    micPatternCombo.setTooltip ("Mic polar pattern. Shotgun has a narrow forward lobe - rotate it with the arrow.");
     micPatternCombo.onChange = [this]
     {
         const auto pat = micPatternCombo.getSelectedId() == 2 ? Worldizer::MicPattern::Shotgun
@@ -456,6 +456,14 @@ void WorldizerAudioProcessorEditor::setEditMode (bool on)
 
     if (on)
     {
+        // Make the preset's own room editable: convert its brush shell into a
+        // sector (selectable walls / vertices / materials / heights). Interior
+        // prop brushes (columns, crates, furniture) stay as fixed obstacles.
+        // Conversion alone is not an "edit" — no dirty flag, no undo entry, no
+        // re-render; those all start with the user's first actual change.
+        shellJustConverted = processorRef.convertRoomShellForEditing();
+        refreshRoomViewFromProcessor();
+
         previousScene = processorRef.getCurrentScene();
         undoStack.clear();
         inspector.setScene (previousScene);
@@ -519,7 +527,15 @@ void WorldizerAudioProcessorEditor::updateStatusBar()
             case Worldizer::EditorSelection::Kind::Vertex:  msg = "Selected: vertex " + juce::String (sel.index); break;
             case Worldizer::EditorSelection::Kind::LineDef: msg = "Selected: wall "   + juce::String (sel.index); break;
             case Worldizer::EditorSelection::Kind::Sector:  msg = "Selected: sector"; break;
-            case Worldizer::EditorSelection::Kind::None:    msg = "Select: click a vertex, wall, or sector. Drag a vertex to move it."; break;
+            case Worldizer::EditorSelection::Kind::None:
+                if (shellJustConverted)
+                    msg = "Room converted for editing - click a wall or vertex to select; drag vertices to reshape.";
+                else if (processorRef.getCurrentScene().getSectorGeometry().isEmpty()
+                         && processorRef.getCurrentScene().getNumBrushes() > 0)
+                    msg = "This scene's geometry is fixed (open-air / irregular) - use Draw (D) to add your own sector.";
+                else
+                    msg = "Select: click a vertex, wall, or sector. Drag a vertex to move it.";
+                break;
         }
     }
     if (undoStack.canUndo())
@@ -662,12 +678,15 @@ void WorldizerAudioProcessorEditor::syncMicControlsFromProcessor()
 
 void WorldizerAudioProcessorEditor::updateSubtitle()
 {
-    juce::String preset = "—";
+    // Non-ASCII literals must go through CharPointer_UTF8 — juce::String's
+    // plain const char* path decodes them as Latin-1 in Release ("â€¢").
+    const juce::String bullet (juce::CharPointer_UTF8 ("  \xe2\x80\xa2  "));
+    juce::String preset (juce::CharPointer_UTF8 ("\xe2\x80\x94"));
     if (auto meta = processorRef.getCurrentPresetMetadata())
         preset = meta->name;
     const bool starred = positionsModified || processorRef.hasUncommittedEdits();
-    juce::String mode  = editMode ? "  \xe2\x80\xa2  EDITING" : juce::String();
-    subtitleText = "v" + juce::String (Worldizer::kVersionString) + "  \xe2\x80\xa2  " + preset
+    juce::String mode  = editMode ? bullet + "EDITING" : juce::String();
+    subtitleText = "v" + juce::String (Worldizer::kVersionString) + bullet + preset
                  + (starred ? "*" : "") + mode;
     repaint();
 }

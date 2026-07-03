@@ -70,6 +70,10 @@ juce::String RenderThread::sceneSignature (const Scene& scene)
 
     if (! scene.getSectorGeometry().isEmpty())
         sig << juce::JSON::toString (scene.getSectorGeometry().toJson(), true);
+
+    // Brush count disambiguates shell-converted scenes (shell brushes removed)
+    // from the same preset's untouched default.
+    sig << ";B" << (int) scene.getNumBrushes();
     return sig;
 }
 

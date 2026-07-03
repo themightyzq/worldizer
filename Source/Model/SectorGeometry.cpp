@@ -1,5 +1,6 @@
 #include "SectorGeometry.h"
 #include "MaterialResolver.h"
+#include "Scene.h"
 #include <limits>
 
 namespace Worldizer
@@ -178,6 +179,99 @@ bool SectorGeometry::fromJson (const juce::var& json, juce::String& errorOut)
     }
 
     errorOut.clear();
+    return true;
+}
+
+//==============================================================================
+namespace
+{
+    struct ShellBrushes
+    {
+        const Brush* floor   = nullptr;
+        const Brush* ceiling = nullptr;
+        const Brush* wxn     = nullptr;
+        const Brush* wxp     = nullptr;
+        const Brush* wyn     = nullptr;
+        const Brush* wyp     = nullptr;
+
+        bool complete() const noexcept
+        {
+            return floor != nullptr && ceiling != nullptr
+                && wxn != nullptr && wxp != nullptr && wyn != nullptr && wyp != nullptr;
+        }
+    };
+
+    ShellBrushes findShell (const Scene& scene)
+    {
+        ShellBrushes s;
+        for (const auto& b : scene.getBrushes())
+        {
+            if (b.getType() != Brush::Type::Box || b.getKind() != Brush::Kind::Additive)
+                continue;
+            const auto& id = b.getId();
+            if      (id == "floor")     s.floor   = &b;
+            else if (id == "ceiling")   s.ceiling = &b;
+            else if (id == "wall_xneg") s.wxn     = &b;
+            else if (id == "wall_xpos") s.wxp     = &b;
+            else if (id == "wall_yneg") s.wyn     = &b;
+            else if (id == "wall_ypos") s.wyp     = &b;
+        }
+        return s;
+    }
+
+    void eraseShell (Scene& scene)
+    {
+        for (const auto* id : { "floor", "ceiling", "wall_xneg", "wall_xpos", "wall_yneg", "wall_ypos" })
+            scene.removeBrushById (id);
+    }
+}
+
+bool SectorGeometry::convertRoomShell (Scene& scene)
+{
+    if (! scene.getSectorGeometry().isEmpty())
+        return false;
+
+    const auto shell = findShell (scene);
+    if (! shell.complete())
+        return false; // open-air / irregular scene — no closed shell to convert
+
+    // Interior bounds: the room-facing faces of the shell slabs.
+    const float x0 = shell.wxn->getMax().x, x1 = shell.wxp->getMin().x;
+    const float y0 = shell.wyn->getMax().y, y1 = shell.wyp->getMin().y;
+    const float z0 = shell.floor->getMax().z, z1 = shell.ceiling->getMin().z;
+    if (x1 <= x0 || y1 <= y0 || z1 <= z0)
+        return false;
+
+    Sector sector;
+    sector.floorHeight     = z0;
+    sector.ceilingHeight   = z1;
+    // All shipped scenes assign brush materials via setAllFaceMaterials, so any
+    // face carries the material; read the room-facing one for clarity.
+    sector.floorMaterial   = shell.floor->getFaceMaterial (Brush::Face::PosZ).getName();
+    sector.ceilingMaterial = shell.ceiling->getFaceMaterial (Brush::Face::NegZ).getName();
+
+    // Counter-clockwise perimeter starting at (x0, y0). Edge i connects vertex i
+    // to i+1: south (y0), east (x1), north (y1), west (x0).
+    sector.vertices = { { x0, y0 }, { x1, y0 }, { x1, y1 }, { x0, y1 } };
+    sector.lineDefs = {
+        LineDef (0, 1, shell.wyn->getFaceMaterial (Brush::Face::PosY).getName()),
+        LineDef (1, 2, shell.wxp->getFaceMaterial (Brush::Face::NegX).getName()),
+        LineDef (2, 3, shell.wyp->getFaceMaterial (Brush::Face::NegY).getName()),
+        LineDef (3, 0, shell.wxn->getFaceMaterial (Brush::Face::PosX).getName()),
+    };
+    if (! sector.isCounterClockwise())
+        sector.reverseWinding();
+
+    scene.getSectorGeometry().sectors = { std::move (sector) };
+    eraseShell (scene);
+    return true;
+}
+
+bool SectorGeometry::removeRoomShell (Scene& scene)
+{
+    if (! findShell (scene).complete())
+        return false;
+    eraseShell (scene);
     return true;
 }
 } // namespace Worldizer

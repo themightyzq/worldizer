@@ -82,6 +82,7 @@ private:
     juce::Rectangle<int> characterRowBounds; // row 3 (SPEAKER / MIC CHARACTER / AMBIENT)
     bool positionsModified = false;
     int lastSceneRevision = -1; // editor-known scene revision; timer detects out-of-band changes
+    bool shellJustConverted = false; // status-bar hint after entering edit mode on a brush preset
 
     // === Edit-mode UI (Slice 6a) ===
     bool editMode = false;

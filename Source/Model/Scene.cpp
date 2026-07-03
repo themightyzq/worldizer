@@ -8,6 +8,19 @@ void Scene::addBrush (Brush brush)
     brushes.push_back (std::move (brush));
 }
 
+bool Scene::removeBrushById (const juce::String& brushId)
+{
+    for (auto it = brushes.begin(); it != brushes.end(); ++it)
+    {
+        if (it->getId() == brushId)
+        {
+            brushes.erase (it);
+            return true;
+        }
+    }
+    return false;
+}
+
 std::vector<Brush> Scene::getAllBrushesForTracing() const
 {
     // Manually-added brushes (Test scenes / legacy presets) FIRST, then the compiled

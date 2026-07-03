@@ -504,6 +504,38 @@ target_link_libraries(StereoIRTest
         juce::juce_recommended_warning_flags
 )
 
+# === Room-shell -> sector conversion verification ===
+juce_add_console_app(ShellConvertTest PRODUCT_NAME "ShellConvertTest")
+juce_generate_juce_header(ShellConvertTest)
+target_sources(ShellConvertTest
+    PRIVATE
+        Tests/shell_convert_test.cpp
+        Source/Model/Material.cpp
+        Source/Model/Brush.cpp
+        Source/Model/SourceNode.cpp
+        Source/Model/MicNode.cpp
+        Source/Model/MicArray.cpp
+        Source/Model/Sector.cpp
+        Source/Model/SectorGeometry.cpp
+        Source/Model/MaterialResolver.cpp
+        Source/Model/Scene.cpp
+        Source/Model/TestScenes.cpp
+        Source/Model/LibraryScenes.cpp
+        Source/DSP/RayTracer.cpp
+        Source/DSP/IRBuilder.cpp
+        Source/DSP/AirAbsorption.cpp
+)
+target_compile_definitions(ShellConvertTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(ShellConvertTest
+    PRIVATE
+        juce::juce_audio_formats
+        juce::juce_audio_basics
+        juce::juce_core
+        juce::juce_dsp
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
 # === Slice 5.5: character library spectral verification ===
 juce_add_console_app(CharacterTest PRODUCT_NAME "CharacterTest")
 juce_generate_juce_header(CharacterTest)
@@ -556,7 +588,8 @@ foreach(wz_test
         DirectionalityTest
         StereoIRTest
         CharacterTest
-        AmbientBedTest)
+        AmbientBedTest
+        ShellConvertTest)
     add_test(NAME ${wz_test} COMMAND ${wz_test})
 endforeach()
 

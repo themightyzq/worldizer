@@ -301,6 +301,7 @@ void WorldizerAudioProcessor::setCurrentPresetId (const juce::String& presetId, 
     sceneRevision.fetch_add (1);
     // Fresh preset load => no uncommitted edits relative to its on-disk defaults.
     dirtyFlag.store (false);
+    shellConverted.store (false);
 
     // Ambient bed follows the preset (crossfades in the audio thread). Character
     // defaults are only applied on USER preset selection — never on state restore
@@ -511,15 +512,33 @@ bool WorldizerAudioProcessor::saveCurrentSceneAsPreset (const juce::String& pres
     return true;
 }
 
+bool WorldizerAudioProcessor::convertRoomShellForEditing()
+{
+    bool converted = false;
+    {
+        const juce::ScopedLock sl (presetLock);
+        if (currentPresetMetadata.has_value())
+            converted = Worldizer::SectorGeometry::convertRoomShell (currentPresetMetadata->scene);
+    }
+    if (converted)
+    {
+        shellConverted.store (true);
+        sceneRevision.fetch_add (1);
+        // No render request: the compiled sector is acoustically equivalent to the
+        // shell it replaced; the baked IR stays valid until the first real edit.
+    }
+    return converted;
+}
+
 // --- Whole-scene edit (RoomView2D spatial drags + sector edits) ---
 void WorldizerAudioProcessor::applyEditedScene (const Worldizer::Scene& scene, bool fullQuality)
 {
-    mutateSceneAndRender ([&scene] (Worldizer::Scene& s)
-    {
-        s.getSource()         = scene.getSource();
-        s.getMicArray()       = scene.getMicArray();
-        s.getSectorGeometry() = scene.getSectorGeometry();
-    }, fullQuality, fullQuality ? 100.0f : 30.0f);
+    // Whole-scene assignment (not member-selective): the shell->sector conversion
+    // means edited scenes can differ from the live one in their BRUSH list too
+    // (shell removed) — copying only source/mics/sectors would leave the live
+    // scene with both the shell brushes AND the compiled sector walls.
+    mutateSceneAndRender ([&scene] (Worldizer::Scene& s) { s = scene; },
+                          fullQuality, fullQuality ? 100.0f : 30.0f);
 }
 
 void WorldizerAudioProcessor::applyEditedSceneNoRender (const Worldizer::Scene& scene)
@@ -529,12 +548,9 @@ void WorldizerAudioProcessor::applyEditedSceneNoRender (const Worldizer::Scene& 
         const juce::ScopedLock sl (presetLock);
         if (! currentPresetMetadata.has_value())
             return;
-        auto& s = currentPresetMetadata->scene;
-        s.getSource()         = scene.getSource();
-        s.getMicArray()       = scene.getMicArray();
-        s.getSectorGeometry() = scene.getSectorGeometry();
-        src    = s.getSource().getPosition();
-        center = s.getMicArray().getCenterPosition();
+        currentPresetMetadata->scene = scene; // whole-scene: see applyEditedScene
+        src    = scene.getSource().getPosition();
+        center = scene.getMicArray().getCenterPosition();
     }
     sceneRevision.fetch_add (1);
     updateDistanceFromSpacing ((center - src).length());
@@ -1132,7 +1148,7 @@ void WorldizerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
     // in every subsequent save.
     for (const char* p : { "sectorGeometry", "cachedIRChannels", "cachedIRSamples",
                            "cachedIRSampleRate", "cachedIRSignature", "cachedIRData",
-                           "currentScene" })
+                           "currentScene", "shellConverted" })
         state.removeProperty (p, nullptr);
 
     // Fetch the render thread's latest full render BEFORE taking presetLock
@@ -1223,6 +1239,7 @@ void WorldizerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
     }
     state.setProperty ("sidebarCollapsed", sidebarCollapsed.load(), nullptr);
     state.setProperty ("dirty",             dirtyFlag.load(),       nullptr);
+    state.setProperty ("shellConverted",    shellConverted.load(),  nullptr);
 
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
@@ -1332,6 +1349,14 @@ void WorldizerAudioProcessor::setStateInformation (const void* data, int sizeInB
                     sectorsRestored = edited.getSectorGeometry().fromJson (sg, sErr) && ! edited.getSectorGeometry().isEmpty();
                 }
 
+                // Shell conversion: the sector superseded the preset's shell
+                // brushes — strip them from the freshly-loaded default scene or
+                // the walls double up. (Pre-conversion sessions that drew a
+                // sector INSIDE a brush room keep both, as they always did.)
+                const bool wasShellConverted = sectorsRestored && (bool) state["shellConverted"];
+                if (wasShellConverted)
+                    Worldizer::SectorGeometry::removeRoomShell (edited);
+
                 if (sectorsRestored || interactiveStateDiffers (edited, defaultScene))
                 {
                     // R8: prefer the cached IR from the state blob — restoring an
@@ -1383,10 +1408,12 @@ void WorldizerAudioProcessor::setStateInformation (const void* data, int sizeInB
                     }
                 }
 
-                // The edit-dirty flag is part of session state too, restored last so
-                // the apply above doesn't accidentally clear it via setCurrentPresetId.
+                // The edit-dirty and shell-converted flags are session state too,
+                // restored last so the apply above doesn't accidentally clear them
+                // via setCurrentPresetId.
                 if (state.hasProperty ("dirty"))
                     dirtyFlag.store ((bool) state["dirty"]);
+                shellConverted.store (wasShellConverted);
             }
         }
     }

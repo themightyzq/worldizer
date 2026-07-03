@@ -127,6 +127,14 @@ public:
     bool getSidebarCollapsed() const noexcept { return sidebarCollapsed.load(); }
     void setSidebarCollapsed (bool shouldBeCollapsed) { sidebarCollapsed.store (shouldBeCollapsed); }
 
+    // === Room-shell conversion (make the preset's own walls editable) ===
+    /** Converts the current preset's brush-built room shell into an editable
+        sector (SectorGeometry::convertRoomShell). Called on entering edit mode.
+        Deliberately does NOT re-render: the acoustics only change on the user's
+        first actual edit. Returns false when the scene already has sectors or
+        has no closed shell (open-air scenes). Message thread. */
+    bool convertRoomShellForEditing();
+
     // === Edit-mode dirty flag (Slice 6a) ===
     // Set by the editor when the user mutates GEOMETRY (sectors / vertices / linedefs
     // / sector heights / materials). Drives the "uncommitted edits" prompt on preset
@@ -243,6 +251,11 @@ private:
     std::optional<Worldizer::WzPresetIO::Loaded> currentPresetMetadata;
     std::atomic<bool> sidebarCollapsed { false };
     std::atomic<bool> dirtyFlag { false };
+    // True once the current preset's brush shell was converted to a sector.
+    // Persisted in state: on restore the freshly-loaded preset still HAS its
+    // shell brushes, which must be stripped before the restored sector is
+    // overlaid (else the walls double up acoustically).
+    std::atomic<bool> shellConverted { false };
 
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> dryDelay { 8192 };
     int currentDryDelaySamples = 0;

@@ -49,5 +49,25 @@ public:
     // === Serialization (used by WzPresetIO v3) ===
     juce::var toJson() const;
     bool      fromJson (const juce::var& json, juce::String& errorOut);
+
+    // === Room-shell conversion (Slice 6b-lite: "edit the preset's walls") ===
+
+    /** Converts a brush-built room SHELL — the six Box brushes every shipped scene
+        names "floor" / "ceiling" / "wall_xneg|xpos|yneg|ypos" — into an editable
+        rectangular Sector at the interior bounds, with the shell's materials and
+        heights, and removes those six brushes from the scene. Interior prop
+        brushes (columns, crates, furniture...) are untouched and remain fixed
+        obstacles. Returns false (scene unchanged) when the scene already has
+        sector geometry or lacks a complete closed shell (open-air scenes).
+
+        The compiled sector is acoustically CLOSE to the brush shell (same bounds,
+        materials, heights; 10 cm oriented walls vs slabs) but not sample-identical
+        — a re-render happens on the user's first actual edit anyway. */
+    static bool convertRoomShell (class Scene& scene);
+
+    /** Removes the six shell brushes without building a sector — used on state
+        restore when a saved session had already converted (the restored sector
+        supersedes the shell; leaving both would double the walls). */
+    static bool removeRoomShell (class Scene& scene);
 };
 } // namespace Worldizer

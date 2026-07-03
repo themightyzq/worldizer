@@ -30,6 +30,11 @@ public:
     const std::vector<Brush>& getBrushes() const noexcept   { return brushes; }
     size_t getNumBrushes() const noexcept                   { return brushes.size(); }
 
+    /** Removes the first brush with this id. Returns true if one was removed.
+        Used by the room-shell -> sector conversion (the sector supersedes the
+        shell brushes). */
+    bool removeBrushById (const juce::String& brushId);
+
     // === Sector geometry (user-authored path, Slice 6a) ===
     SectorGeometry&       getSectorGeometry() noexcept       { return sectorGeometry; }
     const SectorGeometry& getSectorGeometry() const noexcept { return sectorGeometry; }
