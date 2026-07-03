@@ -83,6 +83,9 @@ private:
     bool positionsModified = false;
     int lastSceneRevision = -1; // editor-known scene revision; timer detects out-of-band changes
     bool shellJustConverted = false; // status-bar hint after entering edit mode on a brush preset
+    bool sourceAuditionActive = false; // a character hover-audition is currently in flight
+    bool micAuditionActive = false;
+    int  clipHoldTicks = 0; // output ceiling caught audio; brief hold for the clip dot
 
     // === Edit-mode UI (Slice 6a) ===
     bool editMode = false;

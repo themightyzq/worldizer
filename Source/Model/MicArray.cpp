@@ -33,6 +33,11 @@ int MicArray::getNumMics() const noexcept
 
 void MicArray::setConfiguration (Configuration c)
 {
+    // Clamp out-of-range values (e.g. a corrupt/hostile saved state casting a bad
+    // int to the enum) to Single so nothing downstream sees an undefined config.
+    if (c != Configuration::Single && c != Configuration::StereoXY && c != Configuration::SpacedPair)
+        c = Configuration::Single;
+
     const auto old = configuration;
     configuration = c;
 

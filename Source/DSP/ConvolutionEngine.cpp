@@ -17,7 +17,13 @@ void ConvolutionEngine::prepare (double sr, int maximumBlockSize, int channels)
     maxBlockSize = maximumBlockSize;
     numChannels  = juce::jmax (1, channels);
 
-    const juce::dsp::ProcessSpec spec { sr, (juce::uint32) maximumBlockSize, (juce::uint32) numChannels };
+    // Floor the block size the juce convolvers partition against. At tiny host
+    // blocks (1-32) juce would pick a tiny FFT partition and the per-sample cost
+    // of a multi-second IR explodes across six live convolvers. The convolver
+    // still accepts the real (smaller) blocks fine — a larger prepared max just
+    // means fewer, bigger partitions.
+    const int engineBlock = juce::jmax (256, maximumBlockSize);
+    const juce::dsp::ProcessSpec spec { sr, (juce::uint32) engineBlock, (juce::uint32) numChannels };
     convolverA->prepare (spec);
     convolverB->prepare (spec);
 

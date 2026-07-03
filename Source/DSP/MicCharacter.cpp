@@ -27,6 +27,9 @@ void MicCharacter::prepare (const juce::dsp::ProcessSpec& spec)
 
     // 2 s pink-ish noise loop (Paul Kellet's economy filter over white), unit RMS,
     // seam crossfade-blended at generation so the runtime loop is a plain wrap.
+    // The filter coefficients are fixed (not re-derived per rate), so the spectral
+    // tilt shifts slightly at 96/192 kHz; RMS-normalisation holds the LEVEL constant
+    // and this is a mic self-noise FLOOR, so the tiny timbre drift is inaudible.
     const int n = juce::jmax (1, (int) (spec.sampleRate * 2.0));
     noiseLoop.setSize (1, n);
     auto* d = noiseLoop.getWritePointer (0);

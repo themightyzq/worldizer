@@ -36,6 +36,26 @@ public:
 
     float getHeight() const noexcept     { return ceilingHeight - floorHeight; }
 
+    /** Minimum floor→ceiling gap a sector is allowed to have. Below this the room
+        has no interior volume and the compiler drops the walls. */
+    static constexpr float kMinRoomHeight = 0.5f;
+
+    /** Sets the floor height, keeping the ceiling at least kMinRoomHeight above it
+        (raises the ceiling if the new floor would cross it). */
+    void setFloorHeight (float h) noexcept
+    {
+        floorHeight = h;
+        if (ceilingHeight < floorHeight + kMinRoomHeight)
+            ceilingHeight = floorHeight + kMinRoomHeight;
+    }
+
+    /** Sets the ceiling height, keeping it at least kMinRoomHeight above the floor
+        (clamps up if the user enters a value at/below the floor). */
+    void setCeilingHeight (float h) noexcept
+    {
+        ceilingHeight = juce::jmax (h, floorHeight + kMinRoomHeight);
+    }
+
     // === Materials ===
     juce::String floorMaterial   = "wood_floor";
     juce::String ceilingMaterial = "drywall";
@@ -49,6 +69,11 @@ public:
 
     /** Signed polygon area (positive = counter-clockwise winding). */
     float getSignedArea() const noexcept;
+
+    /** True if the boundary is a SIMPLE polygon (no non-adjacent edges cross) and
+        encloses at least `minArea` m². Used to reject self-intersecting bowties
+        and degenerate/zero-area sectors before they become incoherent geometry. */
+    bool isSimpleWithArea (float minArea = 0.25f) const noexcept;
 
     /** True if the polygon winds counter-clockwise. */
     bool isCounterClockwise() const noexcept;

@@ -39,6 +39,7 @@ public:
     // === Browse-mode interaction ===
     std::function<void (const Scene& scene, bool finalized)> onSceneEdited;
     std::function<void (int micIndex)> onMicSelected;
+    std::function<void()>              onResetPositions;   // double-click a dot in browse mode
     int  getSelectedMic() const noexcept { return selectedMic; }
     void setSelectedMic (int idx)        { selectedMic = juce::jlimit (0, 1, idx); repaint(); }
 
@@ -61,6 +62,7 @@ public:
     /** Editor-side callbacks. */
     std::function<void (EditorSelection)>      onSelectionChanged;
     std::function<void (const Sector& built)>  onSectorCreated;        // user closed the drawing loop
+    std::function<void()>                       onSectorRejected;       // closed loop was self-intersecting / too small
     std::function<void (EditorSelection)>      onDeleteRequested;      // Delete tool / key
 
     /** Renders the current scene to an image (no selection/hover state). */
@@ -72,6 +74,7 @@ public:
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;
     void mouseMove (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
     void mouseExit (const juce::MouseEvent&) override;
 
     // Browse-mode hit-test targets.

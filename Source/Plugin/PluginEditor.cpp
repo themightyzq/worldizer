@@ -212,6 +212,18 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
     // Clicking a spaced-pair mic re-targets the Rotate knob.
     roomView.onMicSelected = [this] (int) { syncMicControlsFromProcessor(); };
 
+    // Double-clicking a dot in browse mode reverts positions to the preset default.
+    roomView.onResetPositions = [this]
+    {
+        if (processorRef.resetPositionsToPresetDefault())
+        {
+            positionsModified = false;
+            refreshRoomViewFromProcessor();
+            syncMicControlsFromProcessor();
+            updateSubtitle();
+        }
+    };
+
     syncMicControlsFromProcessor();
 
     // --- Character row (Slice 5.5) + ambient level (Slice 6) ---
@@ -237,12 +249,15 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
         picker.onAuditionEnd = std::move (endAudition);
         addAndMakeVisible (picker);
     };
+    // Track whether an audition is actually in flight, so the destructor only
+    // ends one that's running (avoids a redundant WAV reload + crossfade on every
+    // editor close).
     wireCharacterPicker (speakerPicker, "sourceCharacter",
-                         [this] (int i) { processorRef.auditionSourceCharacter (i); },
-                         [this] { processorRef.endSourceCharacterAudition(); });
+                         [this] (int i) { sourceAuditionActive = true; processorRef.auditionSourceCharacter (i); },
+                         [this] { processorRef.endSourceCharacterAudition(); sourceAuditionActive = false; });
     wireCharacterPicker (micCharPicker, "micCharacter",
-                         [this] (int i) { processorRef.auditionMicCharacter (i); },
-                         [this] { processorRef.endMicCharacterAudition(); });
+                         [this] (int i) { micAuditionActive = true; processorRef.auditionMicCharacter (i); },
+                         [this] { processorRef.endMicCharacterAudition(); micAuditionActive = false; });
 
     // Small knobs matching the mic-row style.
     auto setupSmallKnob = [this] (juce::Slider& s, juce::Label& l, const juce::String& name, const juce::String& tip)
@@ -291,8 +306,10 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
                 s.getSectorGeometry().sectors[0].lineDefs[(size_t) idx].frontMaterial = m;
         });
     };
-    inspector.onSectorFloorHeightChanged   = [this] (float h) { handleInspectorEdit ([h] (Worldizer::Scene& s) { if (! s.getSectorGeometry().sectors.empty()) s.getSectorGeometry().sectors[0].floorHeight   = h; }); };
-    inspector.onSectorCeilingHeightChanged = [this] (float h) { handleInspectorEdit ([h] (Worldizer::Scene& s) { if (! s.getSectorGeometry().sectors.empty()) s.getSectorGeometry().sectors[0].ceilingHeight = h; }); };
+    // setFloor/CeilingHeight keep ceiling >= floor + kMinRoomHeight so the user
+    // can't invert or zero the room (which would silently delete every wall).
+    inspector.onSectorFloorHeightChanged   = [this] (float h) { handleInspectorEdit ([h] (Worldizer::Scene& s) { if (! s.getSectorGeometry().sectors.empty()) s.getSectorGeometry().sectors[0].setFloorHeight   (h); }); if (editMode) inspector.setScene (processorRef.getCurrentScene()); };
+    inspector.onSectorCeilingHeightChanged = [this] (float h) { handleInspectorEdit ([h] (Worldizer::Scene& s) { if (! s.getSectorGeometry().sectors.empty()) s.getSectorGeometry().sectors[0].setCeilingHeight (h); }); if (editMode) inspector.setScene (processorRef.getCurrentScene()); };
     inspector.onSectorFloorMaterialChanged   = [this] (juce::String m) { handleInspectorEdit ([m] (Worldizer::Scene& s) { if (! s.getSectorGeometry().sectors.empty()) s.getSectorGeometry().sectors[0].floorMaterial   = m; }); };
     inspector.onSectorCeilingMaterialChanged = [this] (juce::String m) { handleInspectorEdit ([m] (Worldizer::Scene& s) { if (! s.getSectorGeometry().sectors.empty()) s.getSectorGeometry().sectors[0].ceilingMaterial = m; }); };
 
@@ -306,6 +323,11 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
     {
         inspector.setSelection (sel);
         updateStatusBar();
+    };
+    roomView.onSectorRejected = [this]
+    {
+        statusBar.setText ("That shape can't be used - walls crossed or the area is too small. Draw a simple room.",
+                           juce::dontSendNotification);
     };
     roomView.onSectorCreated = [this] (const Worldizer::Sector&)
     {
@@ -366,9 +388,10 @@ WorldizerAudioProcessorEditor::~WorldizerAudioProcessorEditor()
     stopTimer();
     // If the window closes mid-hover in a character picker, the CallOutBox's
     // restore callback dies with it (SafePointer) — make sure the processor is
-    // not left playing an uncommitted audition IR.
-    processorRef.endSourceCharacterAudition();
-    processorRef.endMicCharacterAudition();
+    // not left playing an uncommitted audition IR. Only when one is actually in
+    // flight (else this is a needless WAV reload + crossfade on every close).
+    if (sourceAuditionActive) processorRef.endSourceCharacterAudition();
+    if (micAuditionActive)    processorRef.endMicCharacterAudition();
     setLookAndFeel (nullptr);
 }
 
@@ -576,7 +599,9 @@ void WorldizerAudioProcessorEditor::onSaveAsButton()
     w->addTextEditor ("name", "", "Name");
     w->addTextEditor ("desc", "", "Description (optional)");
     w->addTextEditor ("tags", "", "Tags (comma-separated, optional)");
-    const juce::StringArray cats { "Indoor", "Outdoor", "Vehicles/Devices", "Cinematic", "Experimental" };
+    // Must match the shipped-preset category strings exactly, or user-saved presets
+    // form a separate browser group (e.g. "Vehicles & Devices" vs "Vehicles/Devices").
+    const juce::StringArray cats { "Indoor", "Outdoor", "Vehicles & Devices", "Cinematic", "Experimental" };
     w->addComboBox ("cat", cats, "Category");
     w->addButton ("Save",   1, juce::KeyPress (juce::KeyPress::returnKey));
     w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
@@ -697,6 +722,18 @@ void WorldizerAudioProcessorEditor::timerCallback()
     if (renderingIndicator.isVisible() != r)
         renderingIndicator.setVisible (r);
 
+    // Output-ceiling clip indicator: hold the dot ~0.8 s after the last catch.
+    if (processorRef.getAndClearCeilingActive())
+    {
+        clipHoldTicks = 8;
+        repaint (outputGainSlider.getBounds().expanded (10));
+    }
+    else if (clipHoldTicks > 0)
+    {
+        if (--clipHoldTicks == 0)
+            repaint (outputGainSlider.getBounds().expanded (10));
+    }
+
     // Keep the character pickers tracking the parameters (automation, preset
     // defaults, state restore) — cheap: setSelectedIndex only repaints on change.
     auto syncPicker = [this] (Worldizer::CharacterPicker& picker, const char* paramId)
@@ -767,6 +804,16 @@ void WorldizerAudioProcessorEditor::paint (juce::Graphics& g)
 
         g.drawHorizontalLine (micRowBounds.getY(), 8.0f, (float) getWidth() - 8.0f);
         g.drawHorizontalLine (characterRowBounds.getY(), 8.0f, (float) getWidth() - 8.0f);
+    }
+
+    // Output-ceiling clip dot: lights when the safety soft-clip catches the output,
+    // so the user can tell "loud but clean" from "loud and being caught".
+    {
+        const auto ob = outputGainSlider.getBounds();
+        const auto dot = juce::Rectangle<float> (8.0f, 8.0f).withCentre (
+            { (float) ob.getRight() - 6.0f, (float) ob.getY() + 4.0f });
+        g.setColour (clipHoldTicks > 0 ? Col::error : Col::outline.withAlpha (0.5f));
+        g.fillEllipse (dot);
     }
 }
 
@@ -855,8 +902,17 @@ void WorldizerAudioProcessorEditor::resized()
             knob.setBounds (chr.removeFromLeft (52));
             chr.removeFromLeft (18);
         };
-        pickerCol (speakerSectionLabel, speakerPicker, driveLabel, driveSlider, 70, 150);
-        pickerCol (micCharSectionLabel, micCharPicker, noiseLabel, noiseSlider, 40, 150);
+        // Responsive: everything except the two pickers is fixed-width; the pickers
+        // absorb the remaining slack so the whole row (through AMBIENT/Bed) always
+        // fits — never truncating off the right edge at the minimum window width.
+        const int fixedSpeaker = 70 + 10 + 44 + 52 + 18; // section + gaps + Drive
+        const int fixedMic     = 40 + 10 + 44 + 52 + 18; // section + gaps + Noise
+        const int ambientBlock = 72 + 34 + 52;           // AMBIENT + Bed
+        const int pickerBudget = chr.getWidth() - fixedSpeaker - fixedMic - ambientBlock;
+        const int pickerW = juce::jlimit (90, 170, pickerBudget / 2);
+
+        pickerCol (speakerSectionLabel, speakerPicker, driveLabel, driveSlider, 70, pickerW);
+        pickerCol (micCharSectionLabel, micCharPicker, noiseLabel, noiseSlider, 40, pickerW);
 
         ambientSectionLabel.setBounds (chr.removeFromLeft (72).withTrimmedTop (8));
         ambientLabel.setBounds (chr.removeFromLeft (34).withTrimmedTop (8));

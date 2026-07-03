@@ -109,6 +109,15 @@ void RenderThread::run()
             continue;
         }
 
+        // Refuse pathological geometry (matches the message-thread cap) so a
+        // malicious/absurd scene can't peg this thread for minutes.
+        if ((int) job->scene.getAllBrushesForTracing().size() > Worldizer::kMaxTraceBrushes)
+        {
+            juce::Logger::writeToLog ("RenderThread: scene exceeds brush cap, skipping render");
+            busy.store (false);
+            continue;
+        }
+
         rendering.store (true);
 
         RayTracer tracer;

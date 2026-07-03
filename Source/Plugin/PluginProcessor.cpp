@@ -17,9 +17,10 @@ namespace
     // overlapping tails can't push the output past full scale and "overwhelm the
     // mixer". Instantaneous waveshaping (no time-varying gain) => it CANNOT pump, and
     // adds no latency — unlike a compressor/limiter, which is exactly what we don't want.
+    constexpr float kSoftClipKnee = 0.84f; // ~-1.5 dBFS; above this the ceiling engages
     inline float softClip (float x) noexcept
     {
-        constexpr float knee = 0.84f; // ~-1.5 dBFS
+        constexpr float knee = kSoftClipKnee;
         const float a = std::abs (x);
         if (a <= knee)
             return x;
@@ -344,16 +345,29 @@ void WorldizerAudioProcessor::setCurrentPresetId (const juce::String& presetId, 
 
     if (loaded->ir.getNumSamples() > 0)
     {
-        // A preset load is a file read + convolver swap — no tracing. It still goes
-        // THROUGH the render thread so the engine only ever has one loading thread
-        // (see RenderThread header: the convolver's command queue is single-producer).
-        renderThread->requestIRLoad (loaded->ir, loaded->irSampleRate, 80.0f);
+        // A preset load is a file read + convolver swap — no tracing. Normally it
+        // goes THROUGH the render thread so the engine only ever has one loading
+        // thread (single-producer command queue). During an offline render,
+        // though, that async hop would let the bounce head render dry — so load
+        // directly (the render thread is drained in prepareToPlay and no audio
+        // runs concurrently, so single-producer still holds).
+        if (isNonRealtime())
+            convolution.loadIR (loaded->ir, loaded->irSampleRate, 5.0f);
+        else
+            renderThread->requestIRLoad (loaded->ir, loaded->irSampleRate, 80.0f);
     }
     else
     {
         // Recovery path: no baked IR — render from the loaded geometry.
         juce::Logger::writeToLog ("Preset " + presetId + " has no rendered.wav; rendering from geometry");
-        renderCurrentScene (true, 80.0f);
+        if (isNonRealtime())
+        {
+            const auto ir = renderLiveSceneIR();
+            if (ir.getNumSamples() > 0)
+                convolution.loadIR (ir, 48000.0, 5.0f);
+        }
+        else
+            renderCurrentScene (true, 80.0f);
     }
 }
 
@@ -445,6 +459,7 @@ bool WorldizerAudioProcessor::saveCurrentSceneAsPreset (const juce::String& pres
     if (id.isEmpty()) id = "untitled";
 
     const auto folder    = Worldizer::PresetManager::getUserPresetsFolder();
+    folder.createDirectory(); // lazily create the user library on first write
     const auto bundleDir = folder.getChildFile (id + ".wzpreset");
     if (bundleDir.exists() && ! overwriteExisting) { errorOut = "preset already exists"; return false; }
     if (bundleDir.exists())
@@ -462,6 +477,15 @@ bool WorldizerAudioProcessor::saveCurrentSceneAsPreset (const juce::String& pres
         inheritedBedLevel = currentPresetMetadata->ambientLevelDb;
         inheritedSrcChar  = currentPresetMetadata->defaultSourceCharacter;
         inheritedMicChar  = currentPresetMetadata->defaultMicCharacter;
+    }
+
+    // Refuse pathological geometry rather than freeze the UI on a synchronous
+    // trace (the tracer is O(brushes) per bounce with no acceleration structure).
+    if ((int) snapshot.getAllBrushesForTracing().size() > Worldizer::kMaxTraceBrushes)
+    {
+        errorOut = "scene is too complex to render (over " + juce::String (Worldizer::kMaxTraceBrushes)
+                 + " surfaces) — simplify the geometry and try again";
+        return false;
     }
 
     // Synchronous full-quality render (~0.2 s typical) on the message thread.
@@ -539,6 +563,34 @@ void WorldizerAudioProcessor::applyEditedScene (const Worldizer::Scene& scene, b
     // scene with both the shell brushes AND the compiled sector walls.
     mutateSceneAndRender ([&scene] (Worldizer::Scene& s) { s = scene; },
                           fullQuality, fullQuality ? 100.0f : 30.0f);
+}
+
+bool WorldizerAudioProcessor::resetPositionsToPresetDefault()
+{
+    if (presetManager == nullptr)
+        return false;
+
+    juce::String id;
+    {
+        const juce::ScopedLock sl (presetLock);
+        if (! currentPresetMetadata.has_value())
+            return false;
+        id = currentPresetId;
+    }
+
+    juce::String err;
+    auto def = presetManager->loadPreset (id, err);
+    if (! def.has_value())
+        return false;
+
+    // Restore the preset's designed source + mic array; keep the live scene's
+    // sector geometry (a drawn/edited room stays), and the characters/bed params
+    // are untouched (they're APVTS state, not scene state).
+    Worldizer::Scene edited = getCurrentScene();
+    edited.getSource()   = def->scene.getSource();
+    edited.getMicArray() = def->scene.getMicArray();
+    applyEditedScene (edited, true);
+    return true;
 }
 
 void WorldizerAudioProcessor::applyEditedSceneNoRender (const Worldizer::Scene& scene)
@@ -853,9 +905,16 @@ void WorldizerAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBl
     attenuationSmoothed.setCurrentAndTargetValue (atten0);
 
     const int scratchLen = juce::jmax (samplesPerBlock, 8192);
+    preparedCapacity = scratchLen;
     dryScratch.setSize (numCh, scratchLen, false, false, true);
+    bypassScratch.setSize (numCh, scratchLen, false, false, true);
     mixRamp.assign ((size_t) scratchLen, 0.0f);
     attenRamp.assign ((size_t) scratchLen, 1.0f);
+    bypassRamp.assign ((size_t) scratchLen, 0.0f);
+
+    bypassSmoothed.reset (sampleRate, 0.008); // ~8 ms click-free bypass crossfade
+    bypassSmoothed.setCurrentAndTargetValue (
+        apvts.getRawParameterValue ("bypass")->load() >= 0.5f ? 1.0f : 0.0f);
 
     generateTestSignals (sampleRate);
     activeTestSignal = -1;
@@ -895,21 +954,37 @@ void WorldizerAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBl
         bedId     = currentAmbientBedId;
     }
 
+    const bool offline = isNonRealtime();
     if (! haveScene)
     {
         setCurrentPresetId (desired, false); // keep the session's character/level choices
+                                             // (loads the room IR directly when offline)
     }
     else
     {
-        rearmEngineForCurrentScene();
+        rearmEngineForCurrentScene (offline);
         loadAmbientBedById (bedId);
     }
+
+    // Offline determinism: install every queued IR before the first real block so a
+    // faster-than-realtime bounce doesn't render its head dry / through the wrong IR.
+    if (offline)
+        warmUpChainOffline();
 }
 
-void WorldizerAudioProcessor::rearmEngineForCurrentScene()
+void WorldizerAudioProcessor::rearmEngineForCurrentScene (bool synchronous)
 {
     if (renderThread == nullptr || presetManager == nullptr)
         return;
+
+    // Offline: load the room IR straight into the convolver (the render thread is
+    // drained and no audio runs during prepareToPlay), instead of the async
+    // RenderThread hop that would let a bounce head render dry.
+    auto loadRoom = [this, synchronous] (const juce::AudioBuffer<float>& ir, double sr, float xf)
+    {
+        if (synchronous) convolution.loadIR (ir, sr, xf);
+        else             renderThread->requestIRLoad (ir, sr, xf);
+    };
 
     Worldizer::Scene liveScene;
     juce::String presetId;
@@ -930,7 +1005,7 @@ void WorldizerAudioProcessor::rearmEngineForCurrentScene()
     // Exact match: the cached full-quality IR of this very scene (R8).
     if (cached.ir.getNumSamples() > 0 && cached.sceneSignature == liveSig)
     {
-        renderThread->requestIRLoad (cached.ir, cached.sampleRate, 30.0f);
+        loadRoom (cached.ir, cached.sampleRate, 30.0f);
         return;
     }
 
@@ -940,11 +1015,61 @@ void WorldizerAudioProcessor::rearmEngineForCurrentScene()
         loaded.has_value() && Worldizer::RenderThread::sceneSignature (loaded->scene) == liveSig;
 
     if (sceneIsPresetDefault && loaded->ir.getNumSamples() > 0)
-        renderThread->requestIRLoad (loaded->ir, loaded->irSampleRate, 30.0f);
+    {
+        loadRoom (loaded->ir, loaded->irSampleRate, 30.0f);
+    }
+    else if (synchronous)
+    {
+        // Offline edited scene with no cache: trace inline (QA-9) so the bounce
+        // uses the right acoustics instead of a stale/starved background render.
+        const auto ir = renderLiveSceneIR();
+        if (ir.getNumSamples() > 0)
+            convolution.loadIR (ir, 48000.0, 5.0f);
+    }
     else
+    {
         renderCurrentScene (true, 80.0f); // edited scene with no cache (or unreadable
                                           // preset): background re-render from the
                                           // live geometry — the documented fallback
+    }
+}
+
+juce::AudioBuffer<float> WorldizerAudioProcessor::renderLiveSceneIR() const
+{
+    Worldizer::Scene snapshot;
+    {
+        const juce::ScopedLock sl (presetLock);
+        if (! currentPresetMetadata.has_value())
+            return {};
+        snapshot = currentPresetMetadata->scene;
+    }
+    if ((int) snapshot.getAllBrushesForTracing().size() > Worldizer::kMaxTraceBrushes)
+        return {}; // too complex for a synchronous render; caller keeps prior IR
+    Worldizer::RayTracer tracer;
+    Worldizer::RayTracer::Settings rt;
+    rt.numRays = 50000; rt.maxBounces = 32; rt.randomSeed = 12345; // match RenderThread
+    const auto traceResult = tracer.trace (snapshot, rt, 48000);
+
+    Worldizer::IRBuilder builder;
+    Worldizer::IRBuilder::Settings irs; irs.sampleRate = 48000;
+    return builder.build (traceResult, irs);
+}
+
+void WorldizerAudioProcessor::warmUpChainOffline()
+{
+    // All IRs have been loaded DIRECTLY into their engines. juce::dsp::Convolution
+    // installs a queued engine only when process() runs, and our own crossfades
+    // advance per block — so pump the whole chain on silence until everything is
+    // live. ~48 short blocks with brief sleeps is far more than juce's loader
+    // needs; negligible wall-clock, and it only happens on an offline render.
+    const int numCh = juce::jmax (1, getTotalNumOutputChannels());
+    juce::AudioBuffer<float> silence (numCh, preparedCapacity);
+    for (int i = 0; i < 48; ++i)
+    {
+        silence.clear();
+        processChunk (silence);
+        juce::Thread::sleep (2);
+    }
 }
 
 void WorldizerAudioProcessor::releaseResources()
@@ -977,15 +1102,9 @@ void WorldizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     for (int ch = getTotalNumInputChannels(); ch < getTotalNumOutputChannels(); ++ch)
         buffer.clear (ch, 0, numSamples);
 
-    // Safety: grow the dry-capture scratch if a host ever hands us a block larger than
-    // the size prepareToPlay was told to expect. Per the JUCE contract this never fires,
-    // but mixRamp/attenRamp guard the same way below — keep dryScratch consistent so an
-    // oversized block can't overflow it (avoidReallocating: no-op once large enough).
-    if (dryScratch.getNumSamples() < numSamples)
-        dryScratch.setSize (numCh, numSamples, false, false, true);
-
     // Built-in audition: inject the generated test signal (replacing the input)
-    // BEFORE the bypass check, so bypass plays the dry signal instead of muting it.
+    // over the whole buffer. It plays THROUGH the chain (and, when bypassed, dry),
+    // so bypass A/Bs the effect rather than muting the source.
     const int req = testSignalRequested.exchange (-1);
     if (req >= 0)
     {
@@ -1008,11 +1127,30 @@ void WorldizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
             activeTestSignal = -1;
     }
 
-    // Bypass: skip the worldizing chain. Whatever is in the buffer (host audio or
-    // an audition signal) passes through dry, so bypass A/Bs the effect — it does
-    // not mute the source.
-    if (bypassValue->load() >= 0.5f)
-        return;
+    // Slice the host buffer into chunks no larger than the prepared scratch
+    // capacity, so no inner buffer ever has to grow on the audio thread even if a
+    // host violates its own maximumBlockSize contract. Chunks are non-owning
+    // views (no allocation).
+    for (int offset = 0; offset < numSamples; offset += preparedCapacity)
+    {
+        const int n = juce::jmin (preparedCapacity, numSamples - offset);
+        juce::AudioBuffer<float> chunk (buffer.getArrayOfWritePointers(), numCh, offset, n);
+        processChunk (chunk);
+    }
+}
+
+void WorldizerAudioProcessor::processChunk (juce::AudioBuffer<float>& buffer)
+{
+    const int numSamples = buffer.getNumSamples();
+    const int numCh      = buffer.getNumChannels();
+
+    // Bypass reference = the chunk AS RECEIVED (post test-signal, pre-worldizing).
+    // Kept for a click-free crossfade at the end; the wet chain still runs while
+    // bypassed so the convolvers keep advancing (no stale tail on un-bypass) and
+    // queued IR swaps are still consumed.
+    for (int ch = 0; ch < numCh; ++ch)
+        bypassScratch.copyFrom (ch, 0, buffer, ch, 0, numSamples);
+    bypassSmoothed.setTargetValue (bypassValue->load() >= 0.5f ? 1.0f : 0.0f);
 
     inputGain.setGainDecibels (inputGainValue->load());
     outputGain.setGainDecibels (outputGainValue->load());
@@ -1041,16 +1179,23 @@ void WorldizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     convolution.process (block);
 
     // 3a. Wet-only time-of-flight pre-delay (room IR carries no propagation delay).
-    //     Stepped once per block from the smoothed target; Lagrange interpolation +
-    //     the 50 ms ramp keep it click-free while the user drags source/mic.
-    wetPreDelay.setDelay (juce::jlimit (0.0f, (float) (wetPreDelay.getMaximumDelayInSamples() - 1),
-                                        preDelaySmoothed.getCurrentValue()));
-    wetPreDelay.process (juce::dsp::ProcessContextReplacing<float> (block));
-    preDelaySmoothed.skip (numSamples);
+    //     Stepped in small SLICES (not once per block) so the 50 ms glide stays
+    //     click-free even at large host block sizes / offline bounce; Lagrange
+    //     interpolation smooths the sub-sample motion within each slice.
+    {
+        constexpr int kDelaySlice = 32;
+        const float maxDelay = (float) (wetPreDelay.getMaximumDelayInSamples() - 1);
+        for (int off = 0; off < numSamples; off += kDelaySlice)
+        {
+            const int n = juce::jmin (kDelaySlice, numSamples - off);
+            wetPreDelay.setDelay (juce::jlimit (0.0f, maxDelay, preDelaySmoothed.getCurrentValue()));
+            auto sub = block.getSubBlock ((size_t) off, (size_t) n);
+            wetPreDelay.process (juce::dsp::ProcessContextReplacing<float> (sub));
+            preDelaySmoothed.skip (n);
+        }
+    }
 
     // 3b. Wet-only inverse-distance attenuation (smoothed, same ramp for all channels).
-    if ((int) attenRamp.size() < numSamples)
-        attenRamp.resize ((size_t) numSamples);
     for (int i = 0; i < numSamples; ++i)
         attenRamp[(size_t) i] = attenuationSmoothed.getNextValue();
     for (int ch = 0; ch < numCh; ++ch)
@@ -1079,8 +1224,6 @@ void WorldizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     }
 
     // 5. Mix dry + wet with a smoothed blend.
-    if ((int) mixRamp.size() < numSamples)
-        mixRamp.resize ((size_t) numSamples);
     for (int i = 0; i < numSamples; ++i)
         mixRamp[(size_t) i] = mixSmoothed.getNextValue();
 
@@ -1107,15 +1250,32 @@ void WorldizerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     // 6. Output gain.
     outputGain.process (juce::dsp::ProcessContextReplacing<float> (block));
 
-    // 7. Transparent safety ceiling: prevents convolution peaks / dense overlapping
-    //    tails from clipping the output. Bit-exact below ~-1.5 dBFS (no colour in
-    //    normal use); soft-saturates to +-1.0 above. Stateless => never pumps.
+    // 7. Transparent safety ceiling + click-free bypass crossfade. The ceiling
+    //    stops convolution peaks / dense tails from clipping the output (bit-exact
+    //    below ~-1.5 dBFS, soft-saturates to +-1.0 above; stateless => never
+    //    pumps). Bypass then crossfades the ceilinged output against the
+    //    un-processed reference so engage/release are click-free.
+    for (int i = 0; i < numSamples; ++i)
+        bypassRamp[(size_t) i] = bypassSmoothed.getNextValue(); // per-sample, shared across channels
+
+    bool caught = false;
     for (int ch = 0; ch < numCh; ++ch)
     {
         auto* w = buffer.getWritePointer (ch);
+        const auto* ref = bypassScratch.getReadPointer (ch);
         for (int i = 0; i < numSamples; ++i)
-            w[i] = softClip (w[i]);
+        {
+            const float pre  = w[i];
+            const float post = softClip (pre);
+            const float b = bypassRamp[(size_t) i];
+            // The ceiling engaged iff |pre| exceeded the knee; count it only when
+            // the ceilinged signal is actually reaching the output (not bypassed).
+            if (std::abs (pre) > kSoftClipKnee && b < 0.5f) caught = true;
+            w[i] = post * (1.0f - b) + ref[i] * b;
+        }
     }
+    if (caught)
+        ceilingActive.store (true);
 }
 
 //==============================================================================
@@ -1300,13 +1460,16 @@ void WorldizerAudioProcessor::setStateInformation (const void* data, int sizeInB
                     auto& src = edited.getSource();
                     src.setPosition    (getVec ("sourceX",  "sourceY",  "sourceZ",  src.getPosition()));
                     src.setOrientation (getVec ("sourceOX", "sourceOY", "sourceOZ", src.getOrientation()));
+                    // Clamp enum ints from state to valid ranges (corrupt/hostile
+                    // state can hold anything); setConfiguration also self-clamps.
                     if (state.hasProperty ("sourcePattern"))
-                        src.setPattern ((Worldizer::SourcePattern) (int) state["sourcePattern"]);
-
+                        src.setPattern (Worldizer::SourcePattern::Omnidirectional); // only value today
                     auto& arr = edited.getMicArray();
                     arr.setConfiguration ((Worldizer::MicArray::Configuration) (int) state["micConfig"]);
                     if (state.hasProperty ("micPattern"))
-                        arr.setAllPatterns ((Worldizer::MicPattern) (int) state["micPattern"]);
+                        arr.setAllPatterns ((int) state["micPattern"] == (int) Worldizer::MicPattern::Shotgun
+                                                ? Worldizer::MicPattern::Shotgun
+                                                : Worldizer::MicPattern::Omnidirectional);
 
                     const auto mic0Pos = getVec ("mic0X", "mic0Y", "mic0Z", arr.getMic (0).getPosition());
                     const auto mic0Dir = getVec ("mic0OX", "mic0OY", "mic0OZ", arr.getMic (0).getOrientation());

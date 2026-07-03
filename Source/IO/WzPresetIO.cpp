@@ -381,9 +381,20 @@ std::optional<WzPresetIO::Loaded> WzPresetIO::readBundle (const juce::File& bund
         std::unique_ptr<juce::AudioFormatReader> reader (wav.createReaderFor (new juce::FileInputStream (wavFile), true));
         if (reader != nullptr && reader->lengthInSamples > 0)
         {
-            out.ir.setSize ((int) juce::jmax ((juce::uint32) 1, reader->numChannels), (int) reader->lengthInSamples);
-            reader->read (&out.ir, 0, (int) reader->lengthInSamples, 0, true, true);
-            out.irSampleRate = reader->sampleRate;
+            const juce::int64 bytes = reader->lengthInSamples
+                                    * (juce::int64) juce::jmax ((juce::uint32) 1, reader->numChannels)
+                                    * (juce::int64) sizeof (float);
+            if (bytes > kMaxIRBytes)
+            {
+                juce::Logger::writeToLog ("Preset " + out.presetId + ": rendered.wav too large ("
+                                          + juce::String (bytes) + " bytes), ignoring");
+            }
+            else
+            {
+                out.ir.setSize ((int) juce::jmax ((juce::uint32) 1, reader->numChannels), (int) reader->lengthInSamples);
+                reader->read (&out.ir, 0, (int) reader->lengthInSamples, 0, true, true);
+                out.irSampleRate = reader->sampleRate;
+            }
         }
     }
     else
@@ -524,7 +535,8 @@ bool WzPresetIO::packBundle (const juce::File& bundleDir, const juce::File& outP
     return true;
 }
 
-std::optional<WzPresetIO::Loaded> WzPresetIO::readFromBinaryData (const void* data, size_t size, juce::String& errorOut)
+std::optional<WzPresetIO::Loaded> WzPresetIO::readFromBinaryData (const void* data, size_t size,
+                                                                 juce::String& errorOut, bool metadataOnly)
 {
     juce::MemoryInputStream in (data, size, false);
 
@@ -566,7 +578,7 @@ std::optional<WzPresetIO::Loaded> WzPresetIO::readFromBinaryData (const void* da
         out.scene = sceneFromJson (juce::JSON::parse (entries["geometry.json"].toString()), gErr);
     }
 
-    if (entries.count ("rendered.wav") && entries["rendered.wav"].getSize() > 0)
+    if (! metadataOnly && entries.count ("rendered.wav") && entries["rendered.wav"].getSize() > 0)
     {
         auto& blk = entries["rendered.wav"];
         juce::WavAudioFormat wav;
@@ -574,9 +586,15 @@ std::optional<WzPresetIO::Loaded> WzPresetIO::readFromBinaryData (const void* da
             wav.createReaderFor (new juce::MemoryInputStream (blk.getData(), blk.getSize(), false), true));
         if (reader != nullptr && reader->lengthInSamples > 0)
         {
-            out.ir.setSize ((int) juce::jmax ((juce::uint32) 1, reader->numChannels), (int) reader->lengthInSamples);
-            reader->read (&out.ir, 0, (int) reader->lengthInSamples, 0, true, true);
-            out.irSampleRate = reader->sampleRate;
+            const juce::int64 bytes = reader->lengthInSamples
+                                    * (juce::int64) juce::jmax ((juce::uint32) 1, reader->numChannels)
+                                    * (juce::int64) sizeof (float);
+            if (bytes <= kMaxIRBytes)
+            {
+                out.ir.setSize ((int) juce::jmax ((juce::uint32) 1, reader->numChannels), (int) reader->lengthInSamples);
+                reader->read (&out.ir, 0, (int) reader->lengthInSamples, 0, true, true);
+                out.irSampleRate = reader->sampleRate;
+            }
         }
     }
 

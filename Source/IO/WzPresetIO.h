@@ -79,8 +79,15 @@ public:
     /** Pack a .wzpreset directory into a single .wzpkg blob for embedding. */
     static bool packBundle (const juce::File& bundleDir, const juce::File& outPkgFile, juce::String& errorOut);
 
-    /** Read a preset from a .wzpkg blob (the embedded shipped-library format). */
-    static std::optional<Loaded> readFromBinaryData (const void* data, size_t size, juce::String& errorOut);
+    /** Read a preset from a .wzpkg blob (the embedded shipped-library format).
+        metadataOnly=true skips decoding rendered.wav (used by the scan, which
+        discards the IR) — saves decoding every shipped preset's audio at startup. */
+    static std::optional<Loaded> readFromBinaryData (const void* data, size_t size, juce::String& errorOut,
+                                                     bool metadataOnly = false);
+
+    /** Max rendered.wav size we will load into memory (a user .wzpreset could hold
+        a multi-GB WAV; refuse rather than attempt a giant allocation). */
+    static constexpr int kMaxIRBytes = 128 * 1024 * 1024;
 
 private:
     static juce::var sceneToJson (const Scene& scene);

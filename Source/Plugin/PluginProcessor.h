@@ -44,7 +44,12 @@ public:
     bool acceptsMidi() const override                      { return false; }
     bool producesMidi() const override                     { return false; }
     bool isMidiEffect() const override                     { return false; }
-    double getTailLengthSeconds() const override           { return (double) Worldizer::kMaxIRLengthSeconds; }
+    // IR tail + the wet-path time-of-flight pre-delay (up to maxDelaySeconds),
+    // so a tail-trimming host doesn't clip the tail at large source/mic distances.
+    double getTailLengthSeconds() const override
+    {
+        return (double) Worldizer::kMaxIRLengthSeconds + (double) distanceModel.getSettings().maxDelaySeconds;
+    }
 
     //==============================================================================
     int getNumPrograms() override                          { return 1; }
@@ -86,6 +91,11 @@ public:
         state restore when the edited scene's IR was cached in the state blob
         (Soundminer: re-instantiation must not trigger re-rendering). */
     void applyEditedSceneNoRender (const Worldizer::Scene& scene);
+
+    /** Reverts the source + mic array to the current preset's on-disk defaults
+        (keeps the chosen characters / ambient level and any drawn sector
+        geometry). Returns false if there's nothing to revert. Message thread. */
+    bool resetPositionsToPresetDefault();
 
     /** Returns a copy of the live scene (source + mic array + geometry). */
     Worldizer::Scene getCurrentScene() const;
@@ -191,7 +201,18 @@ private:
         matches, else the preset's baked IR (plus a background re-render if the
         scene has real edits). Used on re-prepare, where reloading the preset
         outright would wipe restored/live edits. */
-    void rearmEngineForCurrentScene();
+    void rearmEngineForCurrentScene (bool synchronous = false);
+
+    /** Full-quality synchronous trace of the live scene into a room IR (message
+        thread). Used by the offline path and Save-As. Empty on failure. */
+    juce::AudioBuffer<float> renderLiveSceneIR() const;
+
+    /** Offline determinism (isNonRealtime): after all IRs are loaded DIRECTLY into
+        the engines, pump the chain on silence so juce::dsp::Convolution installs
+        every pending engine and the crossfades finish BEFORE the first real block —
+        otherwise a faster-than-realtime bounce renders its head dry / through the
+        wrong IR. Blocking here is safe: no audio thread runs during prepareToPlay. */
+    void warmUpChainOffline();
 
     // Character / ambient-bed loading (message thread). Parameter changes can
     // arrive on ANY thread including the audio thread (host automation), so
@@ -212,6 +233,12 @@ private:
                                bool fullQuality, float crossfadeMs);
     /** Recomputes the distance model + smoother targets from a source/centre spacing. */
     void updateDistanceFromSpacing (float distanceMeters);
+
+    /** Processes ONE chunk (already <= the prepared capacity) of the worldizing
+        chain, in place, with a click-free bypass crossfade. processBlock slices
+        the host buffer into capacity-sized chunks and calls this per slice, so no
+        inner scratch buffer ever has to grow on the audio thread. */
+    void processChunk (juce::AudioBuffer<float>& buffer);
 
     static constexpr const char* kDefaultPreset = "small_concrete_room";
 
@@ -245,6 +272,23 @@ private:
     std::atomic<float>* mixValue        = nullptr;
     juce::AudioParameterBool* bypassParam = nullptr;
 
+    // Click-free bypass: the wet chain always runs (so the convolvers keep
+    // advancing — no stale tail rings out on un-bypass, and IR swaps are still
+    // consumed while bypassed); the output crossfades between the processed
+    // signal and the un-processed input over ~8 ms. Audio-thread only.
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> bypassSmoothed;
+    juce::AudioBuffer<float> bypassScratch; // per-chunk un-processed reference
+    int preparedCapacity = 8192;            // scratch length; chunk size cap in processBlock
+
+    // Output clip/ceiling indicator (UX): set true (audio thread) whenever the
+    // safety ceiling actually catches a sample; polled + cleared by the editor.
+    std::atomic<bool> ceilingActive { false };
+public:
+    /** True if the output soft-clip ceiling caught audio recently. The editor
+        polls this to light a clip indicator, then clears it. */
+    bool getAndClearCeilingActive() noexcept { return ceilingActive.exchange (false); }
+private:
+
     mutable juce::CriticalSection presetLock;
     std::atomic<int> sceneRevision { 0 };
     juce::String currentPresetId { kDefaultPreset };
@@ -277,6 +321,7 @@ private:
     juce::AudioBuffer<float> dryScratch;
     std::vector<float>       mixRamp;
     std::vector<float>       attenRamp;
+    std::vector<float>       bypassRamp;
 
     // Built-in audition test signals (generated in prepareToPlay).
     void generateTestSignals (double sampleRate);

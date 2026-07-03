@@ -15,13 +15,13 @@ namespace Worldizer
     // Version
     constexpr int  kVersionMajor       = 0;
     constexpr int  kVersionMinor       = 0;
-    constexpr int  kVersionPatch       = 7;
-    constexpr auto kVersionString      = "0.0.7";
+    constexpr int  kVersionPatch       = 8;
+    constexpr auto kVersionString      = "0.0.8";
 
     // Window
     constexpr int  kDefaultWindowWidth  = 900;
     constexpr int  kDefaultWindowHeight = 760;  // +56 over Slice 5 for the character/ambient row
-    constexpr int  kMinWindowWidth      = 700;
+    constexpr int  kMinWindowWidth      = 760;  // keeps the character row (speaker/mic/ambient) fully visible
     constexpr int  kMinWindowHeight     = 610;
     constexpr int  kMaxWindowWidth      = 1400;
     constexpr int  kMaxWindowHeight     = 1060;
@@ -35,4 +35,11 @@ namespace Worldizer
     constexpr int  kRaysFull            = 20000;
     constexpr int  kMaxBouncesPreview   = 8;
     constexpr int  kMaxBouncesFull      = 32;
+
+    // Safety cap on scene complexity for a synchronous (message-thread) render.
+    // Normal rooms are ~10-30 brushes; a hand-crafted preset with tens of
+    // thousands of walls would freeze the UI (the tracer has no spatial
+    // acceleration). Above this, the message-thread render paths refuse rather
+    // than block. Generous enough for any legitimately authored space.
+    constexpr int  kMaxTraceBrushes     = 4000;
 }

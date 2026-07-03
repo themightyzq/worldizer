@@ -196,7 +196,7 @@ namespace
     void drawScene (juce::Graphics& g, const Scene& scene, juce::Rectangle<float> area,
                     bool drawGrid, bool drawIcons, bool drawDirect,
                     RoomView2D::Target hovered, RoomView2D::Target active, int selectedMic,
-                    EditorSelection editSel, bool editMode)
+                    EditorSelection editSel, bool editMode, bool showReadout = false)
     {
         g.setColour (Colors::roomBackground);
         g.fillRect (area);
@@ -347,14 +347,22 @@ namespace
             g.setFont (juce::Font (juce::FontOptions (10.0f)));
             g.drawText ("1 m", juce::Rectangle<float> (x0, y - 18.0f, xf.ppm, 14.0f), juce::Justification::centred);
         }
-        if (drawIcons)
+        if (drawIcons && showReadout)
         {
+            // Distance is the headline cue — show it in metres, prominently, with
+            // the (fixed) source/mic height as quiet secondary info.
+            const float dist = (arr.getCenterPosition() - scene.getSource().getPosition()).length();
+            auto row = area.removeFromBottom (18).reduced (8, 0);
+
             g.setColour (Colors::onSurfaceVariant);
-            g.setFont (juce::Font (juce::FontOptions (10.0f)));
-            const auto txt = "src z " + juce::String (scene.getSource().getPosition().z, 1)
-                           + "  mic z " + juce::String (arr.getCenterPosition().z, 1);
-            g.drawText (txt, area.removeFromBottom (16).removeFromRight (160).reduced (6, 0),
-                        juce::Justification::centredRight);
+            g.setFont (juce::Font (juce::FontOptions (9.5f)));
+            g.drawText ("height " + juce::String (scene.getSource().getPosition().z, 1) + " m",
+                        row, juce::Justification::centredLeft);
+
+            g.setColour (Colors::primary);
+            g.setFont (juce::Font (juce::FontOptions (12.0f).withStyle ("Bold")));
+            g.drawText (juce::String (dist, dist < 10.0f ? 2 : 1) + " m  src \xe2\x86\x94 mic",
+                        row, juce::Justification::centredRight);
         }
     }
 }
@@ -443,7 +451,7 @@ void RoomView2D::paint (juce::Graphics& g)
     drawScene (g, scene, getLocalBounds().toFloat(),
                /*grid*/ true, /*icons*/ true, showDirectPath, hovered, activeDrag,
                scene.getMicArray().getConfiguration() == MicArray::Configuration::SpacedPair ? selectedMic : -1,
-               selection, editMode);
+               selection, editMode, /*showReadout*/ true);
 
     if (editMode)
     {
@@ -622,6 +630,21 @@ void RoomView2D::mouseExit (const juce::MouseEvent&)
     if (hovered != Target::None) { hovered = Target::None; repaint(); }
 }
 
+void RoomView2D::mouseDoubleClick (const juce::MouseEvent& e)
+{
+    // Browse mode: double-click the source or mic to revert positions to the
+    // preset's designed placement (a safety net for the primary drag interaction).
+    if (! editMode)
+    {
+        const auto t = pickTarget (e.position);
+        if (t != Target::None && onResetPositions)
+        {
+            onResetPositions();
+            return;
+        }
+    }
+}
+
 void RoomView2D::mouseDown (const juce::MouseEvent& e)
 {
     cursorScenePos = e.position;
@@ -671,7 +694,10 @@ void RoomView2D::mouseDown (const juce::MouseEvent& e)
             if (drawing.wouldCloseAt (snapped, 0.5f))
             {
                 Sector s = drawing.closeSector();
-                if (s.vertices.size() >= 3)
+                // Reject self-intersecting (bowtie) or degenerate/zero-area
+                // polygons — they compile to incoherent geometry and break the
+                // inside/outside test. The user restarts the draw.
+                if (s.vertices.size() >= 3 && s.isSimpleWithArea())
                 {
                     scene.getSectorGeometry().sectors.push_back (s);
                     repaint();
@@ -679,6 +705,11 @@ void RoomView2D::mouseDown (const juce::MouseEvent& e)
                     // Auto-revert to Select after the first sector (per spec §5.3).
                     setTool (EditorToolPalette::Tool::Select);
                     fireEdited (true);
+                }
+                else
+                {
+                    repaint();
+                    if (onSectorRejected) onSectorRejected();
                 }
                 return;
             }

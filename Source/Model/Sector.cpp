@@ -1,5 +1,6 @@
 #include "Sector.h"
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 namespace Worldizer
@@ -37,6 +38,49 @@ float Sector::getSignedArea() const noexcept
 bool Sector::isCounterClockwise() const noexcept
 {
     return getSignedArea() > 0.0f;
+}
+
+namespace
+{
+    // True if open segments (a,b) and (c,d) properly cross (shared endpoints don't count).
+    bool segmentsCross (Vertex a, Vertex b, Vertex c, Vertex d) noexcept
+    {
+        auto orient = [] (Vertex p, Vertex q, Vertex r)
+        {
+            const float v = (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+            return v > 1.0e-9f ? 1 : (v < -1.0e-9f ? -1 : 0);
+        };
+        const int o1 = orient (a, b, c), o2 = orient (a, b, d);
+        const int o3 = orient (c, d, a), o4 = orient (c, d, b);
+        return o1 != o2 && o3 != o4 && o1 != 0 && o2 != 0 && o3 != 0 && o4 != 0;
+    }
+}
+
+bool Sector::isSimpleWithArea (float minArea) const noexcept
+{
+    const int n = (int) vertices.size();
+    if (n < 3)
+        return false;
+    if (std::abs (getSignedArea()) < minArea)
+        return false;
+
+    // Every pair of non-adjacent edges must not cross (O(n²); n is tiny for a
+    // hand-drawn sector).
+    for (int i = 0; i < n; ++i)
+    {
+        const Vertex a = vertices[(size_t) i];
+        const Vertex b = vertices[(size_t) ((i + 1) % n)];
+        for (int j = i + 1; j < n; ++j)
+        {
+            if (j == i || (j + 1) % n == i || (i + 1) % n == j)
+                continue; // adjacent edges share a vertex — skip
+            const Vertex c = vertices[(size_t) j];
+            const Vertex d = vertices[(size_t) ((j + 1) % n)];
+            if (segmentsCross (a, b, c, d))
+                return false;
+        }
+    }
+    return true;
 }
 
 void Sector::reverseWinding()

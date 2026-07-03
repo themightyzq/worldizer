@@ -72,7 +72,7 @@ PresetBrowser::PresetBrowser (PresetManager& mgr) : presetManager (mgr)
     rebuildList();
 
     lastUserFolderMTime = PresetManager::getUserPresetsFolder().getLastModificationTime();
-    startTimer (1000);
+    startTimer (2000); // poll the user folder for external changes (stat only; no FS write)
 }
 
 PresetBrowser::~PresetBrowser() { stopTimer(); }

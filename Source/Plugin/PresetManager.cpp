@@ -21,9 +21,10 @@ juce::File PresetManager::getUserPresetsFolder()
     base = base.getChildFile ("Application Support");
    #endif
 
-    auto folder = base.getChildFile ("ZQSFX").getChildFile ("Worldizer").getChildFile ("Presets");
-    folder.createDirectory();
-    return folder;
+    // Pure path — does NOT create the directory. Creating it here made the
+    // browser's 1 Hz poll do a filesystem WRITE every second (pathological on a
+    // slow/network mount). The folder is created lazily by Save-As before writing.
+    return base.getChildFile ("ZQSFX").getChildFile ("Worldizer").getChildFile ("Presets");
 }
 
 void PresetManager::rescan()
@@ -53,7 +54,10 @@ void PresetManager::scanShippedPresets()
             continue;
 
         juce::String err;
-        auto loaded = WzPresetIO::readFromBinaryData (d, (size_t) size, err);
+        // metadataOnly: the scan discards the IR anyway (withoutIR below). Skipping
+        // the WAV decode keeps cold start well under the 500 ms Soundminer budget
+        // even with the full shipped library embedded.
+        auto loaded = WzPresetIO::readFromBinaryData (d, (size_t) size, err, /*metadataOnly*/ true);
         if (! loaded.has_value())
         {
             juce::Logger::writeToLog ("Shipped preset failed: " + fname + " — " + err);

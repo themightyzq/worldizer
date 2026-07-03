@@ -8,7 +8,7 @@ endif()
 
 # Keep in sync with Source/Shared/Constants.h kVersionString (this is the version
 # JUCE reports to hosts).
-project(Worldizer VERSION 0.0.7)
+project(Worldizer VERSION 0.0.8)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -38,6 +38,12 @@ juce_add_plugin(Worldizer
 
     # === UI SETTINGS ===
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
+
+    # === STANDALONE: request mic access so macOS doesn't silently deny input ===
+    # (the Standalone processes live input; without the plist usage string modern
+    # macOS blocks the mic and the app appears silent). No effect on the VST3.
+    MICROPHONE_PERMISSION_ENABLED TRUE
+    MICROPHONE_PERMISSION_TEXT "Worldizer processes live audio input through the worldizing chain."
 
     # === BUILD SETTINGS ===
     COPY_PLUGIN_AFTER_BUILD TRUE
