@@ -21,9 +21,10 @@ set(PLUGIN_FORMATS VST3 Standalone)
 
 juce_add_plugin(Worldizer
     # === COMPANY INFO ===
-    COMPANY_NAME "ZQSFX"
-    COMPANY_WEBSITE "https://github.com/themightyzq/worldizer"
+    COMPANY_NAME "ZQ SFX"
+    COMPANY_WEBSITE "https://www.zq-sfx.com"
     COMPANY_EMAIL "connect@zq-sfx.com"
+    COMPANY_COPYRIGHT "Copyright (c) 2026 ZQ SFX"
 
     # === UNIQUE IDENTIFIERS (locked in — see Source/Shared/Constants.h) ===
     PLUGIN_MANUFACTURER_CODE ZQSF
@@ -71,6 +72,7 @@ target_sources(Worldizer
         Source/Plugin/RenderThread.h
         Source/Plugin/RenderThread.cpp
         Source/Plugin/PresetManager.h
+        Source/Plugin/PresetMigration.h
         Source/Plugin/PresetManager.cpp
 
         # --- Shared ---
@@ -580,6 +582,18 @@ target_link_libraries(AmbientBedTest
         juce::juce_recommended_warning_flags
 )
 
+# === User-preset migration from the legacy "ZQSFX" company folder ===
+juce_add_console_app(PresetMigrationTest PRODUCT_NAME "PresetMigrationTest")
+juce_generate_juce_header(PresetMigrationTest)
+target_sources(PresetMigrationTest PRIVATE Tests/preset_migration_test.cpp)
+target_compile_definitions(PresetMigrationTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(PresetMigrationTest
+    PRIVATE
+        juce::juce_core
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
 # === Test registration (CTest) ===
 # Wire the assertion-based console tests into CTest so `ctest` (locally and in CI)
 # runs them. Each returns 0 on pass / nonzero on fail (e.g. `return ok ? 0 : 1`).
@@ -595,7 +609,8 @@ foreach(wz_test
         StereoIRTest
         CharacterTest
         AmbientBedTest
-        ShellConvertTest)
+        ShellConvertTest
+        PresetMigrationTest)
     add_test(NAME ${wz_test} COMMAND ${wz_test})
 endforeach()
 

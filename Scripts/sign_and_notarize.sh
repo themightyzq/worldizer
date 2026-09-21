@@ -5,14 +5,16 @@ set -euo pipefail
 #
 # TEMPLATE — code-sign and notarize the Worldizer VST3 for macOS distribution.
 # See JUCE_VST3_BEST_PRACTICES.md §5 for the full explanation and prerequisites
-# (Apple Developer membership, "Developer ID Application" certificate in Keychain,
-# app-specific password from appleid.apple.com).
+# (Apple Developer membership, "Developer ID Application" certificate in Keychain).
+#
+# Credentials come from a notarytool keychain profile, never from an argument or an
+# environment variable: a password on a command line is visible to every process via `ps`.
+# One-time setup (notarytool prompts for the app-specific password itself):
+#   xcrun notarytool store-credentials AC_PASSWORD --apple-id <apple-id> --team-id <team-id>
 
 # --- Configure these ---------------------------------------------------------
 DEVELOPER_ID="${DEVELOPER_ID:-Developer ID Application: Your Name (TEAM_ID)}"
-APPLE_ID="${APPLE_ID:-your@email.com}"
-TEAM_ID="${TEAM_ID:-TEAM_ID}"
-APP_PASSWORD="${APP_PASSWORD:-app-specific-password}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-AC_PASSWORD}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VST3="${1:-$REPO_ROOT/build/Worldizer_artefacts/Release/VST3/Worldizer.vst3}"
@@ -32,9 +34,7 @@ ditto -c -k --keepParent "$VST3" "$ZIP"
 
 echo "Submitting for notarization (this can take a few minutes) ..."
 xcrun notarytool submit "$ZIP" \
-    --apple-id "$APPLE_ID" \
-    --team-id "$TEAM_ID" \
-    --password "$APP_PASSWORD" \
+    --keychain-profile "$NOTARY_PROFILE" \
     --wait
 
 echo "Stapling the ticket ..."

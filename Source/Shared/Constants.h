@@ -6,8 +6,8 @@ namespace Worldizer
 {
     // Product identity — locked in
     constexpr auto kProductName        = "Worldizer";
-    constexpr auto kCompanyName        = "ZQSFX";
-    constexpr auto kCompanyWebsite     = "https://github.com/themightyzq/worldizer";
+    constexpr auto kCompanyName        = "ZQ SFX";
+    constexpr auto kCompanyWebsite     = "https://www.zq-sfx.com";
     constexpr auto kBundleId           = "com.zqsfx.worldizer";
     constexpr auto kPluginManufCode    = "ZQSF";
     constexpr auto kPluginCode         = "Wrld";

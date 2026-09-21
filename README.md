@@ -97,9 +97,10 @@ character IRs, and ambient room-tone beds are all generated from in-repo definit
 by the `BakeAssets` and `BakePresets` tools and embedded into the plugin. They are
 not committed to the repo, so on a fresh checkout you run both once and rebuild.
 After that, rebuilds pick them up automatically. User presets live under your OS user-data directory —
-`~/Library/Application Support/ZQSFX/Worldizer/Presets/` on macOS, `%APPDATA%\ZQSFX\Worldizer\Presets\`
-on Windows, `~/.config/ZQSFX/Worldizer/Presets/` on Linux (drop a `.wzpreset` directory
-there and restart the plugin).
+`~/Library/Application Support/ZQ SFX/Worldizer/Presets/` on macOS, `%APPDATA%\ZQ SFX\Worldizer\Presets\`
+on Windows, `~/.config/ZQ SFX/Worldizer/Presets/` on Linux (drop a `.wzpreset` directory
+there and restart the plugin). Presets saved by earlier builds under a `ZQSFX` folder are
+copied across automatically on first launch; the old folder is left untouched.
 
 Convenience scripts live in [`Scripts/`](Scripts/):
 

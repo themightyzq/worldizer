@@ -1,6 +1,8 @@
 #include "PresetManager.h"
+#include "PresetMigration.h"
 #include "../Model/MaterialResolver.h"
 #include <algorithm>
+#include <mutex>
 
 #ifndef WORLDIZER_HAS_SHIPPED_PRESETS
  #define WORLDIZER_HAS_SHIPPED_PRESETS 0
@@ -24,11 +26,27 @@ juce::File PresetManager::getUserPresetsFolder()
     // Pure path — does NOT create the directory. Creating it here made the
     // browser's 1 Hz poll do a filesystem WRITE every second (pathological on a
     // slow/network mount). The folder is created lazily by Save-As before writing.
-    return base.getChildFile ("ZQSFX").getChildFile ("Worldizer").getChildFile ("Presets");
+    return base.getChildFile ("ZQ SFX").getChildFile ("Worldizer").getChildFile ("Presets");
+}
+
+juce::File PresetManager::getLegacyUserPresetsFolder()
+{
+    // Company folder used before the "ZQ SFX" rename. Same parent, so derive it
+    // from the current path rather than repeating the per-platform base logic.
+    return getUserPresetsFolder().getParentDirectory().getParentDirectory()
+             .getSiblingFile ("ZQSFX").getChildFile ("Worldizer").getChildFile ("Presets");
 }
 
 void PresetManager::rescan()
 {
+    // Once per process, before the first user scan. Lives here rather than in
+    // getUserPresetsFolder(), which must stay a pure path (it is polled at 1 Hz).
+    static std::once_flag migrateOnce;
+    std::call_once (migrateOnce, []
+    {
+        PresetMigration::migrateLegacyUserPresets (getLegacyUserPresetsFolder(), getUserPresetsFolder());
+    });
+
     const juce::ScopedLock sl (lock);
     entries.clear();
     scanShippedPresets();

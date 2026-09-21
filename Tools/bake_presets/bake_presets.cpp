@@ -5,6 +5,9 @@
     in Resources/EmbeddedPresets/).
 
     Usage: BakePresets [outputDir]   (default outputDir: ./Resources/Presets)
+           BakePresets --repack      re-pack the existing .wzpreset bundles into
+                                     .wzpkg without re-rendering (for metadata-only
+                                     edits; leaves rendered.wav byte-identical)
 */
 
 #include <JuceHeader.h>
@@ -45,7 +48,9 @@ int main (int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI guiInit; // graphics/fonts for thumbnail rendering
 
-    const juce::File outputDir = (argc > 1)
+    const bool repackOnly = (argc > 1 && juce::String (argv[1]) == "--repack");
+
+    const juce::File outputDir = (argc > 1 && ! repackOnly)
         ? juce::File (juce::File::getCurrentWorkingDirectory().getChildFile (juce::String (argv[1])).getFullPathName())
         : juce::File::getCurrentWorkingDirectory().getChildFile ("Resources/Presets");
     const juce::File embedDir = outputDir.getParentDirectory().getChildFile ("EmbeddedPresets");
@@ -145,6 +150,23 @@ int main (int argc, char** argv)
     const int rays = 100000, bounces = 32, seed = 42;
     int failures = 0;
 
+    if (repackOnly)
+    {
+        for (const auto& info : infos)
+        {
+            const auto bundleDir = outputDir.getChildFile (juce::String (info.id) + ".wzpreset");
+            const auto pkg = embedDir.getChildFile (juce::String (info.id) + ".wzpkg");
+            juce::String err;
+            if (! WzPresetIO::packBundle (bundleDir, pkg, err))
+            {
+                std::cerr << "Pack failed for " << info.id << ": " << err << "\n";
+                ++failures; continue;
+            }
+            std::cout << "Repacked EmbeddedPresets/" << pkg.getFileName() << "\n";
+        }
+        return failures == 0 ? 0 : 1;
+    }
+
     for (const auto& info : infos)
     {
         bool ok = false;
@@ -167,7 +189,7 @@ int main (int argc, char** argv)
         meta.name        = info.name;
         meta.category    = info.category;
         meta.description = info.description;
-        meta.author      = "ZQSFX";
+        meta.author      = "ZQ SFX";
         meta.tags        = info.tags;
         meta.ambientBed             = info.ambientBed;
         meta.ambientLevelDb         = info.ambientLevelDb;
