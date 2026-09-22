@@ -5,134 +5,89 @@ namespace Worldizer
 {
 WorldizerLookAndFeel::WorldizerLookAndFeel()
 {
-    setColour (juce::ResizableWindow::backgroundColourId,   Colors::background);
+    // The base zqsfx::ui::LookAndFeel constructor already set the house colours this class
+    // used to set itself: ResizableWindow background, ComboBox/PopupMenu -> LCD glass,
+    // TextButton -> btn gradient / accent-on, Slider textbox -> LCD glass + glow,
+    // TooltipWindow/AlertWindow -> house tokens. rotarySliderFillColourId /
+    // rotarySliderOutlineColourId are gone too: the house's filmstrip knobs carry their own
+    // pointer and consult no per-slider colour at all (zqsfx::ui::LookAndFeel::drawRotarySlider
+    // / drawVectorKnob). Only the ToggleButton colours this class's own drawToggleButton below
+    // reads need setting here.
+    setColour (juce::ToggleButton::textColourId, Colors::onSurfaceVariant);
+    setColour (juce::ToggleButton::tickColourId, Colors::primary);
 
-    setColour (juce::Slider::textBoxTextColourId,           Colors::onSurface);
-    setColour (juce::Slider::textBoxOutlineColourId,        juce::Colours::transparentBlack);
-    setColour (juce::Slider::rotarySliderFillColourId,      Colors::primary);
-    setColour (juce::Slider::rotarySliderOutlineColourId,   Colors::surfaceVariant);
-
-    setColour (juce::Label::textColourId,                   Colors::onSurface);
-
-    setColour (juce::TextButton::buttonColourId,            Colors::surfaceVariant);
-    setColour (juce::TextButton::buttonOnColourId,          Colors::primary);
-    setColour (juce::TextButton::textColourOffId,           Colors::onSurface);
-    setColour (juce::TextButton::textColourOnId,            Colors::background);
-
-    setColour (juce::TextEditor::backgroundColourId,        Colors::surface);
-    setColour (juce::TextEditor::textColourId,              Colors::onSurface);
-    setColour (juce::TextEditor::highlightColourId,         Colors::primaryAlpha40);
-    setColour (juce::TextEditor::outlineColourId,           juce::Colours::transparentBlack);
-    setColour (juce::CaretComponent::caretColourId,         Colors::primary);
-
-    setColour (juce::PopupMenu::backgroundColourId,         Colors::surface);
-    setColour (juce::PopupMenu::textColourId,               Colors::onSurface);
-    setColour (juce::PopupMenu::highlightedBackgroundColourId, Colors::primaryAlpha40);
-
-    setColour (juce::TooltipWindow::backgroundColourId,     Colors::surface);
-    setColour (juce::TooltipWindow::textColourId,           Colors::onSurface);
-    setColour (juce::TooltipWindow::outlineColourId,        Colors::outline);
-
-    setColour (juce::ScrollBar::thumbColourId,              Colors::outline);
-
-    setColour (juce::HyperlinkButton::textColourId,         Colors::onSurfaceVariant);
+    setColour (juce::CaretComponent::caretColourId, zqsfx::ui::colour::lcdText);
+    setColour (juce::ScrollBar::thumbColourId, zqsfx::ui::colour::ledOffRim);
 }
 
-void WorldizerLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int width, int height,
-                                             float sliderPos, float rotaryStartAngle,
-                                             float rotaryEndAngle, juce::Slider& slider)
+// ---------------------------------------------------------------------- Toggle buttons
+void WorldizerLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleButton& button,
+                                             bool /*shouldDrawButtonAsHighlighted*/, bool /*shouldDrawButtonAsDown*/)
 {
-    const auto bounds = juce::Rectangle<int> (x, y, width, height).toFloat().reduced (4.0f);
-    const float radius = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.5f;
-    const auto c = bounds.getCentre();
-    const float thickness = juce::jmax (3.0f, radius * 0.14f);
-    const float arcR = radius - thickness * 0.5f;
-    const float angle = rotaryStartAngle + sliderPos * (rotaryEndAngle - rotaryStartAngle);
+    namespace colour = zqsfx::ui::colour;
 
-    juce::Path track;
-    track.addCentredArc (c.x, c.y, arcR, arcR, 0.0f, rotaryStartAngle, rotaryEndAngle, true);
-    g.setColour (Colors::surfaceVariant);
-    g.strokePath (track, juce::PathStrokeType (thickness, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-
-    const bool active = slider.isMouseOverOrDragging() && slider.isEnabled();
-    juce::Path value;
-    value.addCentredArc (c.x, c.y, arcR, arcR, 0.0f, rotaryStartAngle, angle, true);
-    g.setColour (active ? Colors::primary.brighter (0.15f) : Colors::primary);
-    g.strokePath (value, juce::PathStrokeType (thickness, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-
-    // Hub
-    g.setColour (Colors::surface.brighter (0.04f));
-    g.fillEllipse (juce::Rectangle<float> (arcR * 1.2f, arcR * 1.2f).withCentre (c));
-
-    // Indicator pip (angle measured clockwise from 12 o'clock, JUCE convention).
-    const float pipR = juce::jmax (2.5f, radius * 0.10f);
-    const juce::Point<float> pip (c.x + arcR * std::sin (angle), c.y - arcR * std::cos (angle));
-    g.setColour (Colors::onSurface);
-    g.fillEllipse (juce::Rectangle<float> (pipR * 2.0f, pipR * 2.0f).withCentre (pip));
-}
-
-void WorldizerLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& button,
-                                                 const juce::Colour&, bool highlighted, bool down)
-{
-    const auto b = button.getLocalBounds().toFloat().reduced (0.5f);
-    const float radius = 4.0f;
+    auto bounds = button.getLocalBounds().toFloat().reduced (0.5f);
     const bool on = button.getToggleState();
 
-    juce::Colour fill;
-    if (! button.isEnabled())   fill = Colors::surface;
-    else if (on)                fill = down ? Colors::primaryDim : Colors::primary;
-    else if (down)              fill = Colors::primaryDim.withAlpha (0.4f);
-    else if (highlighted)       fill = Colors::surfaceVariant.brighter (0.25f);
-    else                        fill = Colors::surfaceVariant;
+    // Hard-edged rectangle -- no tick box, no rounded pill (style guide section 6).
+    if (on)
+    {
+        g.setColour (colour::accent);
+        g.fillRect (bounds);
+        g.setColour (juce::Colours::black.withAlpha (0.35f));
+        g.fillRect (bounds.withTop (bounds.getBottom() - 2.0f));
+    }
+    else
+    {
+        g.setGradientFill (zqsfx::ui::gradients::button (bounds, button.isEnabled()));
+        g.fillRect (bounds);
+        g.setColour (juce::Colours::white.withAlpha (button.isEnabled() ? 0.07f : 0.0f));
+        g.fillRect (bounds.removeFromTop (1.0f));
+    }
+    g.setColour (colour::btnBorder);
+    g.drawRect (button.getLocalBounds().toFloat(), 1.0f);
 
-    g.setColour (fill);
-    g.fillRoundedRectangle (b, radius);
-    g.setColour (on ? Colors::primary : Colors::outline);
-    g.drawRoundedRectangle (b, radius, 1.0f);
+    const auto textColour = ! button.isEnabled() ? colour::silkCaption
+                           : on                   ? colour::accentInk
+                                                   : button.findColour (juce::ToggleButton::textColourId);
+    g.setColour (textColour);
+    g.setFont (silkFont (12.0f, true));
+    g.drawText (button.getButtonText(), button.getLocalBounds().reduced (4, 0), juce::Justification::centredLeft, false);
 }
 
-void WorldizerLookAndFeel::drawButtonText (juce::Graphics& g, juce::TextButton& button, bool, bool)
-{
-    g.setFont (getTextButtonFont (button, button.getHeight()));
-
-    juce::Colour c;
-    if (! button.isEnabled())            c = Colors::onSurfaceMuted;
-    else if (button.getToggleState())    c = Colors::background;
-    else                                 c = Colors::onSurface;
-
-    g.setColour (c);
-    g.drawFittedText (button.getButtonText(), button.getLocalBounds().reduced (4, 0),
-                      juce::Justification::centred, 1);
-}
-
-juce::Font WorldizerLookAndFeel::getTextButtonFont (juce::TextButton&, int)
-{
-    return juce::Font (juce::FontOptions (13.0f));
-}
-
+// ---------------------------------------------------------------------- Text editors (LCD look)
 void WorldizerLookAndFeel::fillTextEditorBackground (juce::Graphics& g, int width, int height, juce::TextEditor&)
 {
-    g.setColour (Colors::surface);
-    g.fillRoundedRectangle (0.0f, 0.0f, (float) width, (float) height, 4.0f);
+    // Phosphor screen glass, same treatment as every other LCD field in the house look. Too
+    // small at these field heights to carry scanlines legibly.
+    drawScreen (g, juce::Rectangle<float> (0.0f, 0.0f, (float) width, (float) height), false);
 }
 
 void WorldizerLookAndFeel::drawTextEditorOutline (juce::Graphics& g, int width, int height, juce::TextEditor& ed)
 {
-    g.setColour (ed.hasKeyboardFocus (true) ? Colors::primary : Colors::outline);
-    g.drawRoundedRectangle (0.5f, 0.5f, (float) width - 1.0f, (float) height - 1.0f, 4.0f, 1.0f);
+    // drawScreen already drew the bezel + lcdBorder edge; add the house accent focus ring on
+    // top when focused. Hard rectangle, no rounded corners (style guide section 6).
+    if (ed.hasKeyboardFocus (true))
+    {
+        g.setColour (zqsfx::ui::colour::accent);
+        g.drawRect (0.0f, 0.0f, (float) width, (float) height, 1.0f);
+    }
 }
 
+// ---------------------------------------------------------------------- Scrollbar
 void WorldizerLookAndFeel::drawScrollbar (juce::Graphics& g, juce::ScrollBar&, int x, int y, int width, int height,
                                           bool isVertical, int thumbStart, int thumbSize,
                                           bool isMouseOver, bool isMouseDown)
 {
+    namespace colour = zqsfx::ui::colour;
     juce::Rectangle<int> thumb;
     if (isVertical)
         thumb = { x + width / 3, thumbStart, juce::jmax (3, width / 3), thumbSize };
     else
         thumb = { thumbStart, y + height / 3, thumbSize, juce::jmax (3, height / 3) };
 
-    g.setColour ((isMouseOver || isMouseDown) ? Colors::onSurfaceMuted : Colors::outline);
-    g.fillRoundedRectangle (thumb.toFloat(), (float) juce::jmin (thumb.getWidth(), thumb.getHeight()) * 0.5f);
+    // Hard-edged rectangle, no rounded ends (style guide section 6).
+    g.setColour ((isMouseOver || isMouseDown) ? colour::accent : colour::ledOffRim);
+    g.fillRect (thumb);
 }
 } // namespace Worldizer

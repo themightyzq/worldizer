@@ -92,21 +92,54 @@ namespace
         return xf;
     }
 
-    void drawIcon (juce::Graphics& g, juce::Point<float> c, float radius, juce::Colour fill,
-                   juce::Colour ring, bool glow)
+    // Source and mic icons carry their meaning by SHAPE as well as colour (style guide
+    // section 3 rule 2 / accessibility floor item 5, "colour never carries meaning alone"):
+    // the source is a plain circle (a speaker cone, seen from above); the mic is a
+    // capsule-on-a-stem glyph (a shotgun/handheld mic body), so the two remain
+    // distinguishable under a colour-blindness simulation and not by hue alone.
+    void drawSourceIcon (juce::Graphics& g, juce::Point<float> c, float radius, bool glow)
     {
         if (glow)
         {
             g.setColour (Colors::primaryAlpha40);
             g.drawEllipse (juce::Rectangle<float> (radius * 2 + 8, radius * 2 + 8).withCentre (c), 2.0f);
         }
-        g.setColour (fill);
+        g.setColour (Colors::sourceIcon);
         g.fillEllipse (juce::Rectangle<float> (radius * 2, radius * 2).withCentre (c));
+    }
+
+    void drawMicIcon (juce::Graphics& g, juce::Point<float> c, float radius, juce::Colour ring, bool glow)
+    {
+        if (glow)
+        {
+            g.setColour (Colors::primaryAlpha40);
+            g.drawEllipse (juce::Rectangle<float> (radius * 2 + 8, radius * 2 + 8).withCentre (c), 2.0f);
+        }
+
+        // Capsule head over a short stem, mic-body silhouette (distinct from the source's
+        // plain circle even at a glance).
+        const float headW = radius * 1.5f, headH = radius * 2.1f;
+        const float stemH = radius * 0.8f;
+        juce::Path p;
+        p.addRoundedRectangle (c.x - headW * 0.5f, c.y - headH * 0.62f, headW, headH, headW * 0.5f);
+        p.addRectangle (c.x - radius * 0.18f, c.y + headH * 0.38f - headH * 0.62f, radius * 0.36f, stemH);
+        g.setColour (Colors::micIcon);
+        g.fillPath (p);
         if (! ring.isTransparent())
         {
             g.setColour (ring);
-            g.drawEllipse (juce::Rectangle<float> (radius * 2, radius * 2).withCentre (c), 1.5f);
+            g.strokePath (p, juce::PathStrokeType (1.5f));
         }
+    }
+
+    void drawDashedRect (juce::Graphics& g, juce::Rectangle<float> r, float thickness)
+    {
+        juce::Path rectPath;
+        rectPath.addRectangle (r);
+        juce::Path dashed;
+        const float dashLengths[] = { 5.0f, 3.0f };
+        juce::PathStrokeType (thickness).createDashedStroke (dashed, rectPath, dashLengths, 2);
+        g.fillPath (dashed);
     }
 
     juce::Point<float> drawArrow (juce::Graphics& g, const ViewXf& xf, juce::Point<float> centre,
@@ -129,12 +162,11 @@ namespace
         return tip;
     }
 
-    void drawLabel (juce::Graphics& g, juce::Point<float> at, const juce::String& text, juce::Colour c)
-    {
-        g.setColour (c);
-        g.setFont (juce::Font (juce::FontOptions (11.0f).withStyle ("Bold")));
-        g.drawText (text, juce::Rectangle<float> (at.x - 12.0f, at.y, 24.0f, 14.0f), juce::Justification::centred);
-    }
+    // NOTE: the S/M/L/R glyph tags beside each icon used to draw via a local `drawLabel`
+    // helper with a plain bold sans font. Removed in favour of `drawScreenText` (defined
+    // below, alongside the room's phosphor-screen treatment) so every piece of text drawn on
+    // the room's glass -- tags, scale, distance/height readouts -- goes through the same VT323
+    // LCD glow treatment instead of mixing two type styles on one screen.
 
     // Sector polygons (fill + outline). Shared by paint() and thumbnail rendering.
     void drawSectorGeometry (juce::Graphics& g, const Scene& scene, const ViewXf& xf,
@@ -193,13 +225,80 @@ namespace
         }
     }
 
+    // RoomView2D gets the house phosphor-screen treatment for its background (bezel + glass +
+    // faint wash), same structure as zqsfx::ui::LookAndFeel::drawScreen, but with the glass
+    // colour the product spec maps roomBackground onto (lcdScreenDark -- a darker well than
+    // the generic lcdBg every other LCD field uses, matching "waveform stripes, meter well" use
+    // in the style guide) -- scanlines are skipped so the room geometry stays crisp.
+    //
+    // This file is also compiled by BakePresets (Tools/bake_presets/bake_presets.cpp, for
+    // renderSceneThumbnail -- baking preset thumbnail PNGs headlessly), which per the product
+    // spec must NOT link zqsfx::ui. #if WORLDIZER_HAS_ZQSFX_UI (WorldizerLookAndFeel.h) is true
+    // only for translation units compiled by a target that actually has the house module on its
+    // include path (the Worldizer plugin target and worldizer_ui_snapshot); BakePresets keeps
+    // the pre-migration flat fill for its thumbnails.
+#if WORLDIZER_HAS_ZQSFX_UI
+    void drawRoomPhosphorScreen (juce::Graphics& g, juce::Rectangle<float> r)
+    {
+        namespace colour = zqsfx::ui::colour;
+        g.setColour (colour::screenBezel);
+        g.drawRect (r, 1.0f);
+        auto glass = r.reduced (1.0f);
+        g.setColour (Colors::roomBackground); // == colour::lcdScreenDark
+        g.fillRect (glass);
+        juce::ColourGradient wash (colour::lcdText.withAlpha (0.05f), glass.getCentreX(), glass.getCentreY(),
+                                   juce::Colours::transparentBlack, glass.getX(), glass.getY(), true);
+        g.setGradientFill (wash);
+        g.fillRect (glass);
+        g.setColour (juce::Colours::black.withAlpha (0.40f));
+        g.fillRect (glass.withHeight (2.0f));
+        g.setColour (colour::lcdBorder);
+        g.drawRect (glass, 1.0f);
+    }
+#else
+    void drawRoomPhosphorScreen (juce::Graphics& g, juce::Rectangle<float> r)
+    {
+        g.setColour (Colors::roomBackground);
+        g.fillRect (r);
+    }
+#endif
+
+    // Screen text on the room's phosphor glass goes through the house LCD glow treatment
+    // (drawLcdText/lcdFont) when a house LookAndFeel is reachable (the live RoomView2D always
+    // has one via getLookAndFeel()); the thumbnail renderer has no Component/LookAndFeel
+    // context at all, and BakePresets doesn't link zqsfx::ui at all (see
+    // drawRoomPhosphorScreen above), so both fall back to a plain font (style guide /
+    // migration spec item 9: "otherwise juce::FontOptions(size)").
+#if WORLDIZER_HAS_ZQSFX_UI
+    using HouseLookAndFeelPtr = const zqsfx::ui::LookAndFeel*;
+#else
+    using HouseLookAndFeelPtr = const void*;
+#endif
+
+    void drawScreenText (juce::Graphics& g, HouseLookAndFeelPtr lnf, const juce::String& text,
+                         juce::Rectangle<float> area, float px, juce::Justification just, juce::Colour col)
+    {
+#if WORLDIZER_HAS_ZQSFX_UI
+        if (lnf != nullptr)
+        {
+            lnf->drawLcdText (g, text, area.getSmallestIntegerContainer(), px, just, col);
+            return;
+        }
+#else
+        juce::ignoreUnused (lnf);
+#endif
+        g.setColour (col);
+        g.setFont (juce::Font (juce::FontOptions (px)));
+        g.drawText (text, area, just);
+    }
+
     void drawScene (juce::Graphics& g, const Scene& scene, juce::Rectangle<float> area,
                     bool drawGrid, bool drawIcons, bool drawDirect,
                     RoomView2D::Target hovered, RoomView2D::Target active, int selectedMic,
-                    EditorSelection editSel, bool editMode, bool showReadout = false)
+                    EditorSelection editSel, bool editMode, bool showReadout = false,
+                    HouseLookAndFeelPtr lnf = nullptr)
     {
-        g.setColour (Colors::roomBackground);
-        g.fillRect (area);
+        drawRoomPhosphorScreen (g, area);
 
         const auto xf = computeXf (scene, area);
 
@@ -240,7 +339,12 @@ namespace
             g.setColour (Colors::brushFill);
             g.fillRect (r);
             g.setColour (subtractive ? Colors::brushOutlineSubtractive : Colors::brushOutline);
-            g.drawRect (r, 1.5f);
+            // Subtractive brushes are never colour alone: dashed outline vs the additive
+            // brushes' solid one (style guide section 3 / product spec).
+            if (subtractive)
+                drawDashedRect (g, r, 1.5f);
+            else
+                g.drawRect (r, 1.5f);
         }
 
         // Sector geometry (user-authored, Slice 6a).
@@ -272,9 +376,9 @@ namespace
                     if (shotgun)
                         drawArrow (g, xf, m, arr.getMic (0).getOrientation(), Colors::primaryDim,
                                    hovered == Target::Mic0Arrow || active == Target::Mic0Arrow);
-                    drawIcon (g, m, 7.0f, Colors::micIcon, micRing,
-                              hovered == Target::Mic0 || active == Target::Mic0);
-                    if (big) drawLabel (g, { m.x, m.y + 8.0f }, "M", Colors::micIcon);
+                    drawMicIcon (g, m, 7.0f, micRing,
+                                 hovered == Target::Mic0 || active == Target::Mic0);
+                    if (big) drawScreenText (g, lnf, "M", { m.x - 12.0f, m.y + 8.0f, 24.0f, 14.0f }, 15.0f, juce::Justification::centred, Colors::micIcon);
                     break;
                 }
 
@@ -288,12 +392,12 @@ namespace
                                                  hovered == Target::ArrayArrowL || active == Target::ArrayArrowL);
                     const auto tipR = drawArrow (g, xf, c, dirR, Colors::primaryDim,
                                                  hovered == Target::ArrayArrowR || active == Target::ArrayArrowR);
-                    drawIcon (g, c, 9.0f, Colors::micIcon, micRing,
-                              hovered == Target::ArrayBody || active == Target::ArrayBody);
+                    drawMicIcon (g, c, 9.0f, micRing,
+                                 hovered == Target::ArrayBody || active == Target::ArrayBody);
                     if (big)
                     {
-                        drawLabel (g, { tipL.x, tipL.y - 14.0f }, "L", Colors::micIcon);
-                        drawLabel (g, { tipR.x, tipR.y - 14.0f }, "R", Colors::micIcon);
+                        drawScreenText (g, lnf, "L", { tipL.x - 12.0f, tipL.y - 14.0f, 24.0f, 14.0f }, 15.0f, juce::Justification::centred, Colors::micIcon);
+                        drawScreenText (g, lnf, "R", { tipR.x - 12.0f, tipR.y - 14.0f, 24.0f, 14.0f }, 15.0f, juce::Justification::centred, Colors::micIcon);
                     }
                     break;
                 }
@@ -313,10 +417,10 @@ namespace
                         drawArrow (g, xf, m1, arr.getMic (1).getOrientation(), Colors::primaryDim,
                                    hovered == Target::Mic1Arrow || active == Target::Mic1Arrow);
                     }
-                    drawIcon (g, m0, 7.0f, Colors::micIcon, micRing,
-                              hovered == Target::Mic0 || active == Target::Mic0);
-                    drawIcon (g, m1, 7.0f, Colors::micIcon, micRing,
-                              hovered == Target::Mic1 || active == Target::Mic1);
+                    drawMicIcon (g, m0, 7.0f, micRing,
+                                 hovered == Target::Mic0 || active == Target::Mic0);
+                    drawMicIcon (g, m1, 7.0f, micRing,
+                                 hovered == Target::Mic1 || active == Target::Mic1);
                     if (selectedMic == 0 || selectedMic == 1)
                     {
                         g.setColour (Colors::onSurface);
@@ -324,19 +428,19 @@ namespace
                     }
                     if (big)
                     {
-                        drawLabel (g, { m0.x, m0.y + 8.0f }, "L", Colors::micIcon);
-                        drawLabel (g, { m1.x, m1.y + 8.0f }, "R", Colors::micIcon);
+                        drawScreenText (g, lnf, "L", { m0.x - 12.0f, m0.y + 8.0f, 24.0f, 14.0f }, 15.0f, juce::Justification::centred, Colors::micIcon);
+                        drawScreenText (g, lnf, "R", { m1.x - 12.0f, m1.y + 8.0f, 24.0f, 14.0f }, 15.0f, juce::Justification::centred, Colors::micIcon);
                     }
                     break;
                 }
             }
 
-            drawIcon (g, srcP, 8.0f, Colors::sourceIcon, juce::Colours::transparentBlack,
-                      hovered == Target::Source || active == Target::Source);
-            if (big) drawLabel (g, { srcP.x, srcP.y + 9.0f }, "S", Colors::sourceIcon);
+            drawSourceIcon (g, srcP, 8.0f, hovered == Target::Source || active == Target::Source);
+            if (big) drawScreenText (g, lnf, "S", { srcP.x - 12.0f, srcP.y + 9.0f, 24.0f, 14.0f }, 15.0f, juce::Justification::centred, Colors::sourceIcon);
         }
 
-        // Scale + elevation chrome (unchanged).
+        // Scale + elevation chrome -- numeric readout text on the phosphor screen now goes
+        // through the house LCD glow treatment (VT323 + halo) instead of a plain sans font.
         {
             const float y = area.getBottom() - 16.0f;
             const float x0 = area.getX() + 12.0f;
@@ -344,8 +448,8 @@ namespace
             g.drawLine (x0, y, x0 + xf.ppm, y, 1.5f);
             g.drawLine (x0, y - 3.0f, x0, y + 3.0f, 1.5f);
             g.drawLine (x0 + xf.ppm, y - 3.0f, x0 + xf.ppm, y + 3.0f, 1.5f);
-            g.setFont (juce::Font (juce::FontOptions (10.0f)));
-            g.drawText ("1 m", juce::Rectangle<float> (x0, y - 18.0f, xf.ppm, 14.0f), juce::Justification::centred);
+            drawScreenText (g, lnf, "1 m", juce::Rectangle<float> (x0, y - 18.0f, xf.ppm, 14.0f),
+                            12.0f, juce::Justification::centred, Colors::onSurfaceMuted);
         }
         if (drawIcons && showReadout)
         {
@@ -354,15 +458,11 @@ namespace
             const float dist = (arr.getCenterPosition() - scene.getSource().getPosition()).length();
             auto row = area.removeFromBottom (18).reduced (8, 0);
 
-            g.setColour (Colors::onSurfaceVariant);
-            g.setFont (juce::Font (juce::FontOptions (9.5f)));
-            g.drawText ("height " + juce::String (scene.getSource().getPosition().z, 1) + " m",
-                        row, juce::Justification::centredLeft);
+            drawScreenText (g, lnf, "height " + juce::String (scene.getSource().getPosition().z, 1) + " m",
+                            row, 11.0f, juce::Justification::centredLeft, Colors::onSurfaceVariant);
 
-            g.setColour (Colors::primary);
-            g.setFont (juce::Font (juce::FontOptions (12.0f).withStyle ("Bold")));
-            g.drawText (juce::String (dist, dist < 10.0f ? 2 : 1) + " m  src \xe2\x86\x94 mic",
-                        row, juce::Justification::centredRight);
+            drawScreenText (g, lnf, juce::String (dist, dist < 10.0f ? 2 : 1) + " m  src \xe2\x86\x94 mic",
+                            row, 15.0f, juce::Justification::centredRight, Colors::primary);
         }
     }
 }
@@ -384,9 +484,17 @@ RoomView2D::RoomView2D()
 {
     directPathToggle.setClickingTogglesState (true);
     directPathToggle.setTooltip ("Show the direct source-to-mic path.");
+    directPathToggle.setTitle ("Path");
+    directPathToggle.setDescription ("Show the direct source-to-mic path.");
     directPathToggle.onClick = [this] { showDirectPath = directPathToggle.getToggleState(); repaint(); };
     addAndMakeVisible (directPathToggle);
     setWantsKeyboardFocus (false);
+
+    // Custom component showing data (accessibility floor item 8 / style guide section 8):
+    // a top-down room scene with draggable source/mic icons, not a stock control.
+    setAccessible (true);
+    setTitle ("Room view");
+    setDescription ("Top-down view of the worldizing scene. Drag the source and mic icons to move them.");
 }
 
 RoomView2D::~RoomView2D() = default;
@@ -451,7 +559,13 @@ void RoomView2D::paint (juce::Graphics& g)
     drawScene (g, scene, getLocalBounds().toFloat(),
                /*grid*/ true, /*icons*/ true, showDirectPath, hovered, activeDrag,
                scene.getMicArray().getConfiguration() == MicArray::Configuration::SpacedPair ? selectedMic : -1,
-               selection, editMode, /*showReadout*/ true);
+               selection, editMode, /*showReadout*/ true,
+#if WORLDIZER_HAS_ZQSFX_UI
+               dynamic_cast<zqsfx::ui::LookAndFeel*> (&getLookAndFeel())
+#else
+               nullptr
+#endif
+               );
 
     if (editMode)
     {

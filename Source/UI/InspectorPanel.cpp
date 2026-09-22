@@ -14,23 +14,25 @@ namespace
         l.setJustificationType (j);
     }
 
+    // Numeric readouts get the LCD treatment (product spec): the field's own paint comes from
+    // WorldizerLookAndFeel::fillTextEditorBackground/drawTextEditorOutline (phosphor screen,
+    // house has no TextEditor equivalent); this only sets the text/caret/selection colours,
+    // which those paint hooks don't touch.
     void textFieldStyle (juce::TextEditor& t)
     {
-        t.setColour (juce::TextEditor::backgroundColourId, Colors::surfaceVariant);
-        t.setColour (juce::TextEditor::textColourId,       Colors::onSurface);
-        t.setColour (juce::TextEditor::outlineColourId,    Colors::outline);
-        t.setColour (juce::TextEditor::focusedOutlineColourId, Colors::primary);
+        t.setColour (juce::TextEditor::textColourId,       zqsfx::ui::colour::lcdText);
+        t.setColour (juce::TextEditor::highlightColourId,  zqsfx::ui::colour::accent.withAlpha (0.35f));
+        t.setColour (juce::TextEditor::highlightedTextColourId, zqsfx::ui::colour::accentInk);
         t.setSelectAllWhenFocused (true);
         t.setInputRestrictions (16, "-0123456789.");
     }
 
-    void comboStyle (juce::ComboBox& c)
-    {
-        c.setColour (juce::ComboBox::backgroundColourId, Colors::surfaceVariant);
-        c.setColour (juce::ComboBox::textColourId,       Colors::onSurface);
-        c.setColour (juce::ComboBox::outlineColourId,    Colors::outline);
-        c.setColour (juce::ComboBox::arrowColourId,      Colors::primary);
-    }
+    // NOTE: a `comboStyle` helper used to set ComboBox::backgroundColourId/textColourId/
+    // outlineColourId/arrowColourId here. Removed as dead code: the house LookAndFeel's
+    // drawComboBox/positionComboBoxText always paint the LCD-screen tokens directly and never
+    // consult these component colour IDs (see PluginEditor.cpp's PopupMenu/styleCombo removal
+    // notes for the same finding), so these calls never had any visible effect once
+    // WorldizerLookAndFeel became a zqsfx::ui::LookAndFeel subclass.
 }
 
 InspectorPanel::InspectorPanel()
@@ -51,8 +53,8 @@ InspectorPanel::InspectorPanel()
     labelStyle (vertexXLabel, 11.0f, Colors::onSurfaceVariant); vertexXLabel.setText ("X (m)", juce::dontSendNotification); addChildComponent (vertexXLabel);
     labelStyle (vertexYLabel, 11.0f, Colors::onSurfaceVariant); vertexYLabel.setText ("Y (m)", juce::dontSendNotification); addChildComponent (vertexYLabel);
     labelStyle (vertexInfoLabel, 10.0f, Colors::onSurfaceMuted); addChildComponent (vertexInfoLabel);
-    textFieldStyle (vertexXEditor); addChildComponent (vertexXEditor);
-    textFieldStyle (vertexYEditor); addChildComponent (vertexYEditor);
+    textFieldStyle (vertexXEditor); vertexXEditor.setTitle ("Vertex X"); vertexXEditor.setDescription ("Vertex X position, metres."); addChildComponent (vertexXEditor);
+    textFieldStyle (vertexYEditor); vertexYEditor.setTitle ("Vertex Y"); vertexYEditor.setDescription ("Vertex Y position, metres."); addChildComponent (vertexYEditor);
     auto commitVertex = [this]
     {
         if (updatingFromScene) return;
@@ -65,7 +67,10 @@ InspectorPanel::InspectorPanel()
     // LineDef.
     labelStyle (lineDefLengthLabel,   11.0f, Colors::onSurfaceVariant); addChildComponent (lineDefLengthLabel);
     labelStyle (lineDefMaterialLabel, 11.0f, Colors::onSurfaceVariant); lineDefMaterialLabel.setText ("Material", juce::dontSendNotification); addChildComponent (lineDefMaterialLabel);
-    comboStyle (lineDefMaterialCombo); rebuildMaterialCombo (lineDefMaterialCombo); addChildComponent (lineDefMaterialCombo);
+    rebuildMaterialCombo (lineDefMaterialCombo);
+    lineDefMaterialCombo.setTitle ("Wall Material");
+    lineDefMaterialCombo.setDescription ("Acoustic material of the selected wall.");
+    addChildComponent (lineDefMaterialCombo);
     lineDefMaterialCombo.onChange = [this]
     {
         if (updatingFromScene) return;
@@ -80,15 +85,21 @@ InspectorPanel::InspectorPanel()
     labelStyle (sectorCeilingMatLabel, 11.0f, Colors::onSurfaceVariant); sectorCeilingMatLabel.setText ("Ceiling material", juce::dontSendNotification); addChildComponent (sectorCeilingMatLabel);
     labelStyle (sectorStatsLabel,      10.0f, Colors::onSurfaceMuted); addChildComponent (sectorStatsLabel);
 
-    textFieldStyle (sectorFloorHEditor);   addChildComponent (sectorFloorHEditor);
-    textFieldStyle (sectorCeilingHEditor); addChildComponent (sectorCeilingHEditor);
+    textFieldStyle (sectorFloorHEditor);   sectorFloorHEditor.setTitle ("Floor Height");     sectorFloorHEditor.setDescription ("Sector floor height, metres.");   addChildComponent (sectorFloorHEditor);
+    textFieldStyle (sectorCeilingHEditor); sectorCeilingHEditor.setTitle ("Ceiling Height"); sectorCeilingHEditor.setDescription ("Sector ceiling height, metres."); addChildComponent (sectorCeilingHEditor);
     sectorFloorHEditor.onReturnKey = [this] { if (! updatingFromScene && onSectorFloorHeightChanged) onSectorFloorHeightChanged (sectorFloorHEditor.getText().getFloatValue()); };
     sectorFloorHEditor.onFocusLost = sectorFloorHEditor.onReturnKey;
     sectorCeilingHEditor.onReturnKey = [this] { if (! updatingFromScene && onSectorCeilingHeightChanged) onSectorCeilingHeightChanged (sectorCeilingHEditor.getText().getFloatValue()); };
     sectorCeilingHEditor.onFocusLost = sectorCeilingHEditor.onReturnKey;
 
-    comboStyle (sectorFloorMatCombo);   rebuildMaterialCombo (sectorFloorMatCombo);   addChildComponent (sectorFloorMatCombo);
-    comboStyle (sectorCeilingMatCombo); rebuildMaterialCombo (sectorCeilingMatCombo); addChildComponent (sectorCeilingMatCombo);
+    rebuildMaterialCombo (sectorFloorMatCombo);
+    sectorFloorMatCombo.setTitle ("Floor Material");
+    sectorFloorMatCombo.setDescription ("Acoustic material of the sector floor.");
+    addChildComponent (sectorFloorMatCombo);
+    rebuildMaterialCombo (sectorCeilingMatCombo);
+    sectorCeilingMatCombo.setTitle ("Ceiling Material");
+    sectorCeilingMatCombo.setDescription ("Acoustic material of the sector ceiling.");
+    addChildComponent (sectorCeilingMatCombo);
     sectorFloorMatCombo.onChange = [this]   { if (! updatingFromScene && onSectorFloorMaterialChanged)   onSectorFloorMaterialChanged   (sectorFloorMatCombo.getText()); };
     sectorCeilingMatCombo.onChange = [this] { if (! updatingFromScene && onSectorCeilingMaterialChanged) onSectorCeilingMaterialChanged (sectorCeilingMatCombo.getText()); };
 
@@ -224,9 +235,17 @@ void InspectorPanel::updateFieldsFromScene()
 
 void InspectorPanel::paint (juce::Graphics& g)
 {
-    g.fillAll (Colors::surface);
-    g.setColour (Colors::outline);
-    g.drawVerticalLine (0, 0.0f, (float) getHeight());
+    // Titled-panel chrome (zqsfx::ui::Panel's drawing, reproduced here rather than wrapping
+    // the component in a Panel, so the existing child layout is untouched): gradient face,
+    // hard border, faint top inner highlight. The INSPECTOR/subtitle text stays as Labels
+    // (titleLabel/subtitleLabel), already positioned by resized().
+    auto r = getLocalBounds().toFloat();
+    g.setGradientFill (zqsfx::ui::gradients::panel (r));
+    g.fillRect (r);
+    g.setColour (juce::Colours::white.withAlpha (0.04f));
+    g.fillRect (r.withHeight (1.0f).translated (0.0f, 1.0f));
+    g.setColour (zqsfx::ui::colour::panelBorder);
+    g.drawRect (r, 1.0f);
 }
 
 void InspectorPanel::resized()

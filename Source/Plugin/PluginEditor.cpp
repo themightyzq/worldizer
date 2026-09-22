@@ -1,6 +1,12 @@
 #include "PluginEditor.h"
 #include "../Shared/Constants.h"
 
+// The house look is not optional for the live plugin. RoomView2D.cpp compiles for BakePresets
+// too, where zqsfx_ui is deliberately absent and a flat fallback is used (see its comments);
+// this assert makes the same fallback impossible to reach here by accident, so a broken include
+// path fails the build instead of silently shipping an unstyled editor.
+static_assert (WORLDIZER_HAS_ZQSFX_UI, "The Worldizer plugin target must link zqsfx::ui");
+
 namespace Col = Worldizer::Colors;
 
 //==============================================================================
@@ -11,22 +17,33 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
 {
     setLookAndFeel (&lookAndFeel);
 
-    // Combo popups in the Worldizer palette (the L&F has no custom combo drawing).
-    lookAndFeel.setColour (juce::PopupMenu::backgroundColourId,            Col::surface);
-    lookAndFeel.setColour (juce::PopupMenu::textColourId,                  Col::onSurface);
-    lookAndFeel.setColour (juce::PopupMenu::highlightedBackgroundColourId, Col::primaryDim);
-    lookAndFeel.setColour (juce::PopupMenu::highlightedTextColourId,       Col::background);
+    // NOTE: the pre-migration code set PopupMenu colours directly on `lookAndFeel` here (combo
+    // popups in the old Worldizer palette). Removed: the house zqsfx::ui::LookAndFeel's own
+    // ctor already sets PopupMenu colours to the LCD-screen tokens, and its drawComboBox /
+    // positionComboBoxText paint the screen glass and caret directly from house colour tokens
+    // (colour::lcdBg / lcdBorder / lcdDim / lcdText), never consulting the component's own
+    // colour IDs -- so these overrides would have silently fought the house look instead of
+    // ever taking visible effect. Leaving them in would re-tint every dropdown back to the old
+    // amber-on-dark palette.
 
     // --- Header buttons ---
     editButton.setClickingTogglesState (true);
     editButton.setTooltip ("Enter / exit the geometry editor (S/D/X tools; Cmd+Z undo; Esc cancel).");
+    editButton.setTitle ("Edit");
+    editButton.setDescription ("Enter or exit the geometry editor.");
     editButton.onClick = [this] { setEditMode (editButton.getToggleState()); };
     addAndMakeVisible (editButton);
 
     bypassButton.setClickingTogglesState (true);
     bypassButton.setTooltip ("Pass audio through unchanged.");
+    bypassButton.setTitle ("Bypass");
+    bypassButton.setDescription ("Pass audio through unchanged.");
     addAndMakeVisible (bypassButton);
     bypassAttach = std::make_unique<juce::ButtonParameterAttachment> (*p.apvts.getParameter ("bypass"), bypassButton);
+
+    // --- Logo (About-box trigger, far right of the header) ---
+    logo.onClick = [this] { showAboutBox(); };
+    addAndMakeVisible (logo);
 
     // --- Sidebar ---
     presetBrowser.setSelectedPresetId (p.getCurrentPresetId());
@@ -77,6 +94,8 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
         s.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
         s.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 72, 18);
         s.setTooltip (tip);
+        s.setTitle (name);
+        s.setDescription (tip);
         addAndMakeVisible (s);
         l.setText (name, juce::dontSendNotification);
         l.setJustificationType (juce::Justification::centred);
@@ -93,7 +112,10 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
     // --- Audition buttons ---
     auto setupAudition = [this] (juce::TextButton& b, int index, const juce::String& sig)
     {
-        b.setTooltip ("Play a built-in " + sig + " test signal through the current preset.");
+        const auto tip = "Play a built-in " + sig + " test signal through the current preset.";
+        b.setTooltip (tip);
+        b.setTitle (b.getButtonText());
+        b.setDescription (tip);
         b.onClick = [this, index] { processorRef.triggerTestSignal (index); };
         addAndMakeVisible (b);
     };
@@ -123,21 +145,18 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
     makeSectionLabel (micPatternLabel, "Pattern", 11.0f, Col::onSurfaceVariant);
     makeSectionLabel (xyAngleLabel,    "XY Angle", 11.0f, Col::onSurfaceVariant);
 
-    auto styleCombo = [] (juce::ComboBox& c)
-    {
-        c.setColour (juce::ComboBox::backgroundColourId, Col::surfaceVariant);
-        c.setColour (juce::ComboBox::textColourId,       Col::onSurface);
-        c.setColour (juce::ComboBox::outlineColourId,    Col::outline);
-        c.setColour (juce::ComboBox::arrowColourId,      Col::primary);
-    };
-    styleCombo (micConfigCombo);
-    styleCombo (micPatternCombo);
+    // NOTE: a `styleCombo` helper used to set ComboBox::backgroundColourId/textColourId/
+    // outlineColourId/arrowColourId here (Col::surfaceVariant/onSurface/outline/primary).
+    // Removed as dead code under the house LookAndFeel — see the PopupMenu removal note above;
+    // the same reasoning applies (drawComboBox/positionComboBoxText never consult these IDs).
 
     // Config selector — ids: 1 Single, 2 Stereo XY, 3 Spaced Pair.
     micConfigCombo.addItem ("Single",      1);
     micConfigCombo.addItem ("Stereo XY",   2);
     micConfigCombo.addItem ("Spaced Pair", 3);
     micConfigCombo.setTooltip ("Microphone configuration. Stereo XY / Spaced Pair produce a true-stereo IR.");
+    micConfigCombo.setTitle ("Mic Config");
+    micConfigCombo.setDescription ("Microphone configuration.");
     micConfigCombo.onChange = [this]
     {
         using Cfg = Worldizer::MicArray::Configuration;
@@ -156,6 +175,8 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
     micPatternCombo.addItem ("Omni",    1);
     micPatternCombo.addItem ("Shotgun", 2);
     micPatternCombo.setTooltip ("Mic polar pattern. Shotgun has a narrow forward lobe - rotate it with the arrow.");
+    micPatternCombo.setTitle ("Mic Pattern");
+    micPatternCombo.setDescription ("Microphone polar pattern.");
     micPatternCombo.onChange = [this]
     {
         const auto pat = micPatternCombo.getSelectedId() == 2 ? Worldizer::MicPattern::Shotgun
@@ -175,6 +196,8 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
     xyAngleSlider.setTextValueSuffix (juce::String::fromUTF8 ("\xc2\xb0"));
     xyAngleSlider.setValue (90.0, juce::dontSendNotification);
     xyAngleSlider.setTooltip ("Angle between the two XY capsules. Wider = broader stereo image.");
+    xyAngleSlider.setTitle ("XY Angle");
+    xyAngleSlider.setDescription ("Angle between the two XY capsules.");
     xyAngleSlider.onValueChange = [this]
     {
         // Preview while dragging the knob; full quality on text entry / release.
@@ -199,6 +222,8 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
     rotateSlider.setRange (0.0, 360.0, 1.0);
     rotateSlider.setTextValueSuffix (juce::String::fromUTF8 ("\xc2\xb0"));
     rotateSlider.setTooltip ("Rotate the selected directional mic (or drag its arrow in the room view).");
+    rotateSlider.setTitle ("Rotate");
+    rotateSlider.setDescription ("Rotate the selected directional mic.");
     rotateSlider.onValueChange = [this]
     {
         const bool full = ! rotateSlider.isMouseButtonDown();
@@ -265,6 +290,8 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
         s.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
         s.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 56, 16);
         s.setTooltip (tip);
+        s.setTitle (name);
+        s.setDescription (tip);
         addAndMakeVisible (s);
         l.setText (name, juce::dontSendNotification);
         l.setColour (juce::Label::textColourId, Col::onSurfaceVariant);
@@ -371,6 +398,9 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
     githubLink.setURL (juce::URL ("https://github.com/themightyzq/worldizer"));
     githubLink.setFont (juce::Font (juce::FontOptions (9.0f)), false, juce::Justification::centredRight);
     githubLink.setColour (juce::HyperlinkButton::textColourId, Col::onSurfaceMuted);
+    githubLink.setTooltip ("Open the Worldizer source repository.");
+    githubLink.setTitle ("GitHub");
+    githubLink.setDescription ("Open the Worldizer source repository.");
     addAndMakeVisible (githubLink);
 
     updateSubtitle();
@@ -648,6 +678,20 @@ void WorldizerAudioProcessorEditor::onSaveAsButton()
     }), false);
 }
 
+void WorldizerAudioProcessorEditor::showAboutBox()
+{
+    // ASCII-only (style guide section 5 / migration spec): no existing About box to preserve
+    // product text from, and no Murch/Burtt credit line to keep (there wasn't one) — the
+    // product name/version + the standard ZQ SFX credit block is the whole of it.
+    const juce::String text =
+        juce::String ("Worldizer ") + JucePlugin_VersionString + "\n\n"
+        + "ZQ SFX - https://www.zq-sfx.com - connect@zq-sfx.com\n"
+        + "Free software under GPL-3.0-or-later. Built with JUCE.\n"
+        + "Fonts: Barlow Condensed, VT323, IBM Plex Mono (SIL OFL).\n"
+        + "Knobs: CC0 designs from the g200kg KnobGallery.";
+    juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::NoIcon, "About Worldizer", text, "OK", this);
+}
+
 bool WorldizerAudioProcessorEditor::keyPressed (const juce::KeyPress& k)
 {
     // Cmd/Ctrl+Z anywhere when in edit mode.
@@ -775,7 +819,10 @@ void WorldizerAudioProcessorEditor::timerCallback()
 //==============================================================================
 void WorldizerAudioProcessorEditor::paint (juce::Graphics& g)
 {
-    g.fillAll (Col::background);
+    // House chassis gradient (style guide / migration spec) instead of a flat fill.
+    const auto bounds = getLocalBounds().toFloat();
+    g.setGradientFill (zqsfx::ui::gradients::chassis (bounds));
+    g.fillRect (bounds);
 
     // Accent line
     g.setColour (Col::primaryAlpha40);
@@ -823,7 +870,11 @@ void WorldizerAudioProcessorEditor::resized()
     area.removeFromTop (6); // accent line
 
     auto header = area.removeFromTop (60);
-    bypassButton.setBounds (header.getRight() - 12 - 80, header.getY() + 16, 80, 28);
+    // Logo at the far right (About-box trigger, style guide section 5) — never under 24 px
+    // tall; existing header buttons shift left to make room, same Y and size as before.
+    logo.setBounds (juce::Rectangle<int> (header.getRight() - 12 - 34, header.getY(), 34, header.getHeight())
+                        .withSizeKeepingCentre (28, 28));
+    bypassButton.setBounds (logo.getX() - 12 - 80, header.getY() + 16, 80, 28);
     editButton.setBounds   (bypassButton.getX() - 8 - 80, header.getY() + 16, 80, 28);
 
     auto footer = area.removeFromBottom (24);

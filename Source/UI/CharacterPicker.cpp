@@ -101,6 +101,9 @@ private:
 CharacterPicker::CharacterPicker (const std::vector<CharacterDef>& defsIn)
     : defs (defsIn)
 {
+    button.setTooltip ("Choose a character. Hovering a row in the list auditions it.");
+    button.setTitle ("Character");
+    button.setDescription ("Choose a character. Hovering a row in the list auditions it.");
     button.onClick = [this] { showMenu(); };
     addAndMakeVisible (button);
     setSelectedIndex (0);

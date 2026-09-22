@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <zqsfx_ui/zqsfx_ui.h>
 #include "PluginProcessor.h"
 #include "../Shared/WorldizerLookAndFeel.h"
 #include "../UI/RoomView2D.h"
@@ -42,6 +43,7 @@ private:
     void confirmDiscardThenAsync (std::function<void()> onProceed);              // discard prompt
     void doUndo();
     void updateStatusBar();
+    void showAboutBox();
 
     WorldizerAudioProcessor& processorRef;
     WorldizerLookAndFeel lookAndFeel;
@@ -49,6 +51,7 @@ private:
     // Header
     juce::TextButton editButton { "Edit" };
     juce::TextButton bypassButton { "Bypass" };
+    zqsfx::ui::LogoMark logo { "Worldizer" };   // far right of the header; the About-box trigger
     juce::String subtitleText;
 
     // Sidebar + main view

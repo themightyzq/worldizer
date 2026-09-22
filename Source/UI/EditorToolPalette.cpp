@@ -10,6 +10,8 @@ EditorToolPalette::EditorToolPalette()
         b.setClickingTogglesState (true);
         b.setRadioGroupId (1, juce::dontSendNotification);
         b.setTooltip (tip);
+        b.setTitle (b.getButtonText());
+        b.setDescription (tip);
         b.onClick = [this, t] { setTool (t); };
         addAndMakeVisible (b);
     };
@@ -18,11 +20,15 @@ EditorToolPalette::EditorToolPalette()
     setupToolButton (deleteButton, Tool::Delete, "Delete (X): click to delete the element under the cursor.");
 
     snapButton.setTooltip ("1 m grid snap. Hold Shift while dragging to disable.");
+    snapButton.setTitle ("Snap");
+    snapButton.setDescription ("1 m grid snap. Hold Shift while dragging to disable.");
     snapButton.setToggleState (true, juce::dontSendNotification);
     snapButton.onClick = [this] { if (onSnapChanged) onSnapChanged (snapButton.getToggleState()); };
     addAndMakeVisible (snapButton);
 
     undoButton.setTooltip ("Undo last edit (Cmd/Ctrl+Z).");
+    undoButton.setTitle ("Undo");
+    undoButton.setDescription ("Undo last edit.");
     undoButton.onClick = [this] { if (onUndo) onUndo(); };
     addAndMakeVisible (undoButton);
 

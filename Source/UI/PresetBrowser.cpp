@@ -53,11 +53,15 @@ void PresetEntry::mouseExit  (const juce::MouseEvent&) { hovered = false; repain
 PresetBrowser::PresetBrowser (PresetManager& mgr) : presetManager (mgr)
 {
     collapseButton.setTooltip ("Collapse the preset browser.");
+    collapseButton.setTitle ("Collapse Presets");
+    collapseButton.setDescription ("Collapse the preset browser.");
     collapseButton.onClick = [this] { setCollapsed (! collapsed); };
     addAndMakeVisible (collapseButton);
 
     searchBox.setTextToShowWhenEmpty ("search", Colors::onSurfaceMuted);
     searchBox.setFont (juce::Font (juce::FontOptions (13.0f)));
+    searchBox.setTitle ("Search Presets");
+    searchBox.setDescription ("Filter the preset list by name, category, or tag.");
     searchBox.onTextChange = [this] { searchText = searchBox.getText(); layoutList(); };
     addAndMakeVisible (searchBox);
 
@@ -66,6 +70,8 @@ PresetBrowser::PresetBrowser (PresetManager& mgr) : presetManager (mgr)
     addAndMakeVisible (listViewport);
 
     saveAsButton.setTooltip ("Save the current scene as a new preset in the user library.");
+    saveAsButton.setTitle ("Save As");
+    saveAsButton.setDescription ("Save the current scene as a new preset in the user library.");
     saveAsButton.onClick = [this] { if (onSaveAsRequested) onSaveAsRequested(); };
     addAndMakeVisible (saveAsButton);
 
@@ -114,6 +120,9 @@ void PresetBrowser::rebuildList()
         juce::Image thumb = m.thumbnail.isValid() ? m.thumbnail : renderSceneThumbnail (m.scene, 40, 40);
 
         auto* e = new PresetEntry (m.presetId, m.name, m.category, thumb);
+        e->setAccessible (true);
+        e->setTitle (m.name);
+        e->setDescription (m.category + " preset. Click to load.");
         const juce::String id = m.presetId;
         e->onClicked = [this, id]
         {
@@ -171,9 +180,16 @@ void PresetBrowser::mouseDown (const juce::MouseEvent&)
 
 void PresetBrowser::paint (juce::Graphics& g)
 {
-    g.fillAll (Colors::surface);
-    g.setColour (Colors::outline);
-    g.drawVerticalLine (getWidth() - 1, 0.0f, (float) getHeight());
+    // Titled-panel chrome (zqsfx::ui::Panel's drawing, reproduced here rather than wrapping
+    // the component in a Panel, so the existing child layout is untouched): gradient face,
+    // hard border, faint top inner highlight, silk title over a ruleTitle hairline.
+    auto r = getLocalBounds().toFloat();
+    g.setGradientFill (zqsfx::ui::gradients::panel (r));
+    g.fillRect (r);
+    g.setColour (juce::Colours::white.withAlpha (0.04f));
+    g.fillRect (r.withHeight (1.0f).translated (0.0f, 1.0f));
+    g.setColour (zqsfx::ui::colour::panelBorder);
+    g.drawRect (r, 1.0f);
 
     if (collapsed)
     {
@@ -187,9 +203,11 @@ void PresetBrowser::paint (juce::Graphics& g)
         return;
     }
 
-    g.setColour (Colors::onSurfaceVariant);
-    g.setFont (juce::Font (juce::FontOptions (10.0f).withStyle ("Bold")));
+    g.setColour (zqsfx::ui::colour::silkTitle);
+    g.setFont (juce::Font (juce::FontOptions (14.0f, juce::Font::bold)).withExtraKerningFactor (0.27f));
     g.drawText ("PRESETS", 12, 0, getWidth() - 50, 28, juce::Justification::centredLeft);
+    g.setColour (zqsfx::ui::colour::ruleTitle);
+    g.fillRect (juce::Rectangle<int> (8, 26, getWidth() - 16, 1));
 }
 
 void PresetBrowser::resized()

@@ -16,6 +16,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # JUCE 8.x as a git submodule under JUCE/
 add_subdirectory(JUCE)
 
+# The ZQ SFX house UI (tokens, LookAndFeel, bound controls, embedded OFL fonts). Must come
+# AFTER JUCE. Pinned by tag: bump deliberately, then re-run worldizer_ui_snapshot and compare.
+include(FetchContent)
+FetchContent_Declare(zqsfx_ui
+    GIT_REPOSITORY https://github.com/themightyzq/zqsfx_ui.git
+    GIT_TAG v0.2.1
+    GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(zqsfx_ui)
+
 # Formats: VST3 + Standalone (recommended for Soundminer; AU omitted by design)
 set(PLUGIN_FORMATS VST3 Standalone)
 
@@ -178,6 +187,7 @@ target_link_libraries(Worldizer
         juce::juce_audio_utils
         juce::juce_dsp
         juce::juce_opengl
+        zqsfx::ui
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
@@ -593,6 +603,29 @@ target_link_libraries(PresetMigrationTest
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags
 )
+
+# === UI snapshot tool (headless before/after render gate for the zqsfx_ui migration) ===
+# pamplejuce pattern: link against the plugin's own shared-code target ("Worldizer", produced
+# by juce_add_plugin above) instead of recompiling PluginProcessor.cpp/PluginEditor.cpp a second
+# time. juce_generate_juce_header(Worldizer)'s generated JuceHeader.h is only added to
+# Worldizer's OWN include path as PRIVATE (JUCEUtils.cmake), so it does not propagate through
+# target_link_libraries; it is added back explicitly below via JUCE_GENERATED_SOURCES_DIRECTORY.
+juce_add_console_app(worldizer_ui_snapshot PRODUCT_NAME "worldizer_ui_snapshot")
+target_sources(worldizer_ui_snapshot PRIVATE Tools/ui_snapshot/main.cpp)
+target_include_directories(worldizer_ui_snapshot PRIVATE
+    Source
+    $<TARGET_PROPERTY:Worldizer,JUCE_GENERATED_SOURCES_DIRECTORY>)
+target_link_libraries(worldizer_ui_snapshot
+    PRIVATE
+        Worldizer
+        WorldizerBinaryData
+        zqsfx::ui
+        juce::juce_audio_utils
+        juce::juce_dsp
+        juce::juce_opengl
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags)
+target_compile_definitions(worldizer_ui_snapshot PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 
 # === Test registration (CTest) ===
 # Wire the assertion-based console tests into CTest so `ctest` (locally and in CI)
