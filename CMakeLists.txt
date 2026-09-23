@@ -25,8 +25,8 @@ FetchContent_Declare(zqsfx_ui
     GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(zqsfx_ui)
 
-# Formats: VST3 + Standalone (recommended for Soundminer; AU omitted by design)
-set(PLUGIN_FORMATS VST3 Standalone)
+# Formats: VST3 + AU + Standalone (recommended for Soundminer; AU for Logic/GarageBand)
+set(PLUGIN_FORMATS VST3 AU Standalone)
 
 juce_add_plugin(Worldizer
     # === COMPANY INFO ===
@@ -66,6 +66,7 @@ juce_add_plugin(Worldizer
 
     # === VST3 CATEGORIES ===
     VST3_CATEGORIES "Fx" "Reverb"
+    AU_MAIN_TYPE "kAudioUnitType_Effect"
 )
 
 # Source uses <JuceHeader.h>

@@ -11,6 +11,13 @@ using namespace Worldizer;
 
 namespace
 {
+    // The room a fresh instance opens with, so inserting the plugin does something
+    // audible and representative rather than nothing. "hallway" is the archetypal
+    // worldizing space: obviously a real room, but moderate enough not to swamp the
+    // source. Change this one id to pick a different opening room; any directory name
+    // under Resources/Presets/ (minus the .wzpreset suffix) is valid.
+    const juce::String kDefaultPresetId { "hallway" };
+
     // Transparent output safety ceiling. Below the knee (~-1.5 dBFS) it is bit-exact
     // (returns the input unchanged) so it never colours normal-level material; above
     // the knee it soft-saturates and asymptotes to +-1.0, so convolution peaks / dense
@@ -116,6 +123,17 @@ WorldizerAudioProcessor::WorldizerAudioProcessor()
     presetManager->rescan();
 
     renderThread = std::make_unique<RenderThread> (convolution);
+
+    // Open on a real room. Without this a fresh instance has an empty Scene, so the ray
+    // trace returns nothing, the IR degenerates to a single silent sample, and with mix
+    // defaulting to 100% wet the plugin is simply silent on insert with no indication why.
+    //
+    // applyCharacterDefaults=false deliberately, matching the state-restore and
+    // prepareToPlay paths: a default load is not a user preset choice and must not push
+    // parameter changes to the host from a constructor. If a session is restored,
+    // setStateInformation runs after this and overrides it.
+    if (presetManager->hasPreset (kDefaultPresetId))
+        setCurrentPresetId (kDefaultPresetId, false);
 
     startTimer (30); // message-thread poll for characterReloadNeeded (see parameterChanged)
 }

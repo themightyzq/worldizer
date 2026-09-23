@@ -311,7 +311,15 @@ juce::AudioBuffer<float> IRBuilder::build (const RayTracer::Result& tr,
     const int numBins  = juce::jmax (1, tr.numBins);
 
     if (tr.histogramsPerMic.empty())
-        return juce::AudioBuffer<float> (1, 1); // degenerate — empty trace
+    {
+        // Degenerate: nothing to trace (no geometry). This buffer is convolved with, so it
+        // must be SILENT, not merely small -- juce::AudioBuffer does not zero its storage,
+        // and the old `return AudioBuffer<float>(1, 1);` handed uninitialised memory to the
+        // convolution engine as a one-sample impulse of arbitrary gain.
+        juce::AudioBuffer<float> empty (1, 1);
+        empty.clear();
+        return empty;
+    }
 
     // A directional mic's reception weighting makes its histogram effectively sparse,
     // so widen the envelope smoothing to keep the late tail monotonic (anti-pump).

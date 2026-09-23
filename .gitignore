@@ -27,6 +27,7 @@ cmake-build-*/
 .claude/
 .remember/
 CLAUDE.md
+STATUS.md
 
 # Diversion VCS local state / config (Diversion is the primary VCS; git mirrors)
 .diversion/
@@ -70,3 +71,6 @@ Resources/RoomTones/*.wav
 # Internal review docs (Diversion-only; produced by the QA/UX review prompts)
 /REVIEW-QA.md
 /REVIEW-UX.md
+
+# CMake build trees other than build/ (review, universal, ui gates). Never committed.
+build-*/
