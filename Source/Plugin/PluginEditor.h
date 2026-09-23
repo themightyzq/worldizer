@@ -39,6 +39,7 @@ private:
     // === Edit mode (Slice 6a) ===
     void setEditMode (bool on);
     void onSaveAsButton();                     // shows the modal Save-As dialog
+    void onRenameButton();                     // shows the modal Rename dialog (user presets only)
     void handleInspectorEdit (std::function<void (Worldizer::Scene&)> mutator); // push undo + apply
     void confirmDiscardThenAsync (std::function<void()> onProceed);              // discard prompt
     void doUndo();

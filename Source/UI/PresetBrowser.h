@@ -15,6 +15,7 @@ public:
 
     void setSelected (bool shouldBeSelected);
     const juce::String& getPresetId() const { return presetId; }
+    const juce::String& getDisplayName() const { return displayName; }
 
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
@@ -41,11 +42,21 @@ public:
         invokes the processor's save flow. */
     std::function<void()> onSaveAsRequested;
 
+    /** Fired by the "Rename" button when a USER preset is selected (the button is
+        disabled otherwise). The editor shows the rename dialog and calls
+        PresetManager::renameUserPreset, then refreshes/reselects here. */
+    std::function<void()> onRenameRequested;
+
     /** External rescan trigger (e.g. after the processor saves a new preset). */
     void refreshList() { rebuildList(); }
 
     juce::String getSelectedPresetId() const { return selectedPresetId; }
     void setSelectedPresetId (const juce::String& presetId);
+
+    /** Current display name of the selected preset (from its metadata's `name`),
+        or empty if nothing is selected / it's no longer in the list. Used to
+        prefill the rename dialog. */
+    juce::String getSelectedPresetDisplayName() const;
 
     bool isCollapsed() const noexcept { return collapsed; }
     void setCollapsed (bool shouldBeCollapsed);
@@ -58,6 +69,7 @@ private:
     void timerCallback() override;
     void rebuildList();
     void layoutList();
+    void updateRenameButtonState();
 
     PresetManager& presetManager;
 
@@ -66,6 +78,7 @@ private:
     juce::Viewport   listViewport;
     juce::Component  listContents;
     juce::TextButton saveAsButton { "+ Save As" };
+    juce::TextButton renameButton { "Rename" };
 
     juce::OwnedArray<PresetEntry> entries;
     juce::String selectedPresetId;

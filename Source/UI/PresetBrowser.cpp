@@ -75,7 +75,13 @@ PresetBrowser::PresetBrowser (PresetManager& mgr) : presetManager (mgr)
     saveAsButton.onClick = [this] { if (onSaveAsRequested) onSaveAsRequested(); };
     addAndMakeVisible (saveAsButton);
 
+    renameButton.setTitle ("Rename Preset");
+    renameButton.setDescription ("Rename the selected user preset.");
+    renameButton.onClick = [this] { if (onRenameRequested) onRenameRequested(); };
+    addAndMakeVisible (renameButton);
+
     rebuildList();
+    updateRenameButtonState();
 
     lastUserFolderMTime = PresetManager::getUserPresetsFolder().getLastModificationTime();
     startTimer (2000); // poll the user folder for external changes (stat only; no FS write)
@@ -88,6 +94,25 @@ void PresetBrowser::setSelectedPresetId (const juce::String& id)
     selectedPresetId = id;
     for (auto* e : entries)
         e->setSelected (e->getPresetId() == id);
+    updateRenameButtonState();
+}
+
+juce::String PresetBrowser::getSelectedPresetDisplayName() const
+{
+    for (auto* e : entries)
+        if (e->getPresetId() == selectedPresetId)
+            return e->getDisplayName();
+    return {};
+}
+
+void PresetBrowser::updateRenameButtonState()
+{
+    const bool isUser = selectedPresetId.isNotEmpty() && presetManager.isUserPreset (selectedPresetId);
+    renameButton.setEnabled (isUser);
+    renameButton.setTooltip (isUser
+        ? "Rename the selected preset."
+        : (selectedPresetId.isEmpty() ? "Select a user preset to rename it."
+                                      : "Factory presets cannot be renamed."));
 }
 
 void PresetBrowser::setCollapsed (bool shouldBeCollapsed)
@@ -101,6 +126,7 @@ void PresetBrowser::setCollapsed (bool shouldBeCollapsed)
     searchBox.setVisible (! collapsed);
     listViewport.setVisible (! collapsed);
     saveAsButton.setVisible (! collapsed);
+    renameButton.setVisible (! collapsed);
 
     resized();
     repaint();
@@ -138,6 +164,7 @@ void PresetBrowser::rebuildList()
     }
 
     layoutList();
+    updateRenameButtonState();
 }
 
 void PresetBrowser::layoutList()
@@ -224,7 +251,14 @@ void PresetBrowser::resized()
     collapseButton.setBounds (header.removeFromRight (28).reduced (3));
 
     searchBox.setBounds (b.removeFromTop (32).reduced (8, 4));
-    saveAsButton.setBounds (b.removeFromBottom (36).reduced (8, 6));
+
+    // 40 px row - 2*4 px vertical padding = 32 px tall buttons, comfortably over
+    // the 22 px minimum hit target.
+    auto buttonRow = b.removeFromBottom (40).reduced (8, 4);
+    renameButton.setBounds (buttonRow.removeFromLeft ((buttonRow.getWidth() - 6) / 2));
+    buttonRow.removeFromLeft (6);
+    saveAsButton.setBounds (buttonRow);
+
     listViewport.setBounds (b.reduced (4, 2));
 
     layoutList();

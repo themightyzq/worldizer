@@ -65,6 +65,19 @@ public:
     /** Read just metadata.json (no IR/scene/thumbnail) — fast, for browser listing. */
     static std::optional<Loaded> readMetadataOnly (const juce::File& bundleDir, juce::String& errorOut);
 
+    /** Derives a filesystem-safe preset id (lowercase alnum + underscores) from
+        a display name — the same scheme Save As uses to name a new .wzpreset
+        bundle, shared here so preset rename generates identical ids for
+        identical names. Never returns an empty string ("untitled" fallback). */
+    static juce::String makeSafeId (const juce::String& displayName);
+
+    /** Rewrites just the `name` field of an existing bundle's metadata.json,
+        leaving geometry.json / rendered.wav / thumbnail.png untouched — used by
+        preset rename, which only changes the display name (and, separately,
+        the bundle directory itself). Returns false with errorOut set if
+        metadata.json is missing/invalid or the write fails. */
+    static bool renameMetadata (const juce::File& bundleDir, const juce::String& newName, juce::String& errorOut);
+
     /** Write a .wzpreset directory (creates it; overwrites existing files). */
     static bool writeBundle (const juce::File& bundleDir,
                              const Scene& scene,

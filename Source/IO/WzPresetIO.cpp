@@ -448,6 +448,53 @@ std::optional<WzPresetIO::Loaded> WzPresetIO::readMetadataOnly (const juce::File
     return out;
 }
 
+juce::String WzPresetIO::makeSafeId (const juce::String& displayName)
+{
+    // Generate a filesystem-safe id from the display name (alnum + underscores).
+    //
+    // NOTE: `id += (isLetterOrDigit (c) ? c : '_')` (the original, pre-existing
+    // form of this logic, inline in PluginProcessor::saveCurrentSceneAsPreset
+    // before it was extracted here) is a latent bug: the ternary's operands are
+    // `juce_wchar` (from the range-for over the String) and `char` ('_'), whose
+    // common type after usual arithmetic conversion is an INTEGER, not a
+    // character — so `id +=` calls String's NUMBER-formatting overload and
+    // appends the character's decimal codepoint (e.g. "Whatever" -> a run of
+    // digits) instead of the character itself. Assigning to an explicitly
+    // juce_wchar-typed local first forces the intended character append.
+    juce::String id;
+    for (auto c : displayName.toLowerCase())
+    {
+        const juce::juce_wchar kept = juce::CharacterFunctions::isLetterOrDigit (c) ? c : (juce::juce_wchar) '_';
+        id += kept;
+    }
+    id = id.removeCharacters ("/\\:*?\"<>|");
+    while (id.contains ("__")) id = id.replace ("__", "_");
+    id = id.trimCharactersAtStart ("_").trimCharactersAtEnd ("_");
+    if (id.isEmpty()) id = "untitled";
+    return id;
+}
+
+bool WzPresetIO::renameMetadata (const juce::File& bundleDir, const juce::String& newName, juce::String& errorOut)
+{
+    const auto metaFile = bundleDir.getChildFile ("metadata.json");
+    auto parsed = juce::JSON::parse (metaFile.loadFileAsString());
+    auto* obj = parsed.getDynamicObject();
+    if (obj == nullptr)
+    {
+        errorOut = "metadata.json is missing or invalid";
+        return false;
+    }
+
+    obj->setProperty ("name", newName);
+
+    if (! metaFile.replaceWithText (juce::JSON::toString (parsed, false)))
+    {
+        errorOut = "write metadata.json failed";
+        return false;
+    }
+    return true;
+}
+
 bool WzPresetIO::writeBundle (const juce::File& bundleDir, const Scene& scene,
                               const juce::AudioBuffer<float>& ir, double irSampleRate,
                               const Loaded& metadata, juce::String& errorOut)

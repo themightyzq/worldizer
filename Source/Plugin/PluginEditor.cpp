@@ -391,6 +391,7 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
     };
 
     presetBrowser.onSaveAsRequested = [this] { onSaveAsButton(); };
+    presetBrowser.onRenameRequested = [this] { onRenameButton(); };
     setWantsKeyboardFocus (true);
 
     // --- Footer ---
@@ -409,6 +410,20 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
     setResizable (true, true);
     setResizeLimits (Worldizer::kMinWindowWidth, Worldizer::kMinWindowHeight,
                      Worldizer::kMaxWindowWidth, Worldizer::kMaxWindowHeight);
+
+    // Editor-size persistence (QoL): restore the last size the user resized to
+    // (stored on the processor — see getStateInformation/setStateInformation),
+    // if the host already restored it before creating us. 0x0 means "never set"
+    // (fresh session, or a state saved before this feature existed) — keep the
+    // default just set above. Only apply a size within the resize limits: an
+    // out-of-range stored value (e.g. hand-edited state) is discarded rather
+    // than silently clamped into something the user didn't ask for.
+    if (p.getEditorWidth() > 0 && p.getEditorHeight() > 0
+        && p.getEditorWidth()  >= Worldizer::kMinWindowWidth  && p.getEditorWidth()  <= Worldizer::kMaxWindowWidth
+        && p.getEditorHeight() >= Worldizer::kMinWindowHeight && p.getEditorHeight() <= Worldizer::kMaxWindowHeight)
+    {
+        setSize (p.getEditorWidth(), p.getEditorHeight());
+    }
 
     startTimerHz (10);
 }
@@ -674,6 +689,57 @@ void WorldizerAudioProcessorEditor::onSaveAsButton()
         self->previousScene = self->processorRef.getCurrentScene();
         self->undoStack.clear();
         self->positionsModified = false;
+        self->updateSubtitle();
+    }), false);
+}
+
+void WorldizerAudioProcessorEditor::onRenameButton()
+{
+    const auto presetId = presetBrowser.getSelectedPresetId();
+    // Defensive: the button is disabled unless a user preset is selected, but
+    // guard anyway in case the list changed out from under a queued click.
+    if (presetId.isEmpty() || ! processorRef.getPresetManager().isUserPreset (presetId))
+        return;
+
+    const auto currentName = presetBrowser.getSelectedPresetDisplayName();
+
+    auto* w = new juce::AlertWindow ("Rename Preset", "Enter a new name for this preset.",
+                                     juce::AlertWindow::NoIcon, this);
+    w->addTextEditor ("name", currentName, "Name");
+    w->getTextEditor ("name")->setTitle ("Preset Name");
+    w->getTextEditor ("name")->setDescription ("New display name for this user preset.");
+    w->addButton ("Rename", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    // SafePointer: the dialog can outlive the editor (host closes the plugin
+    // window while it is up) — a raw `this` would dangle.
+    juce::Component::SafePointer<WorldizerAudioProcessorEditor> safeThis (this);
+    w->enterModalState (true, juce::ModalCallbackFunction::create ([safeThis, w, presetId] (int code)
+    {
+        std::unique_ptr<juce::AlertWindow> owner (w);
+        if (code != 1 || safeThis == nullptr)
+            return;
+        auto* self = safeThis.getComponent();
+
+        const juce::String newName = w->getTextEditor ("name")->getText().trim();
+
+        juce::String newId, err;
+        if (! self->processorRef.getPresetManager().renameUserPreset (presetId, newName, newId, err))
+        {
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+                "Rename failed", err, "OK", self);
+            return;
+        }
+
+        // If the renamed preset is the one currently loaded, the processor's
+        // bookkeeping id must follow — presetId IS the .wzpreset folder name,
+        // so the rename above already changed it on disk; this only updates
+        // in-memory identity, it does not reload/re-render anything.
+        if (self->processorRef.getCurrentPresetId() == presetId)
+            self->processorRef.notifyCurrentPresetRenamed (presetId, newId, newName);
+
+        self->presetBrowser.refreshList();
+        self->presetBrowser.setSelectedPresetId (newId);
         self->updateSubtitle();
     }), false);
 }
@@ -992,4 +1058,10 @@ void WorldizerAudioProcessorEditor::resized()
     {
         roomView.setBounds (content);
     }
+
+    // Editor-size persistence (QoL): remember the current size so
+    // getStateInformation can save it for the next reopen. Cheap (two atomic
+    // stores) and deliberately does NOT mark the session dirty — window size
+    // isn't a preset/scene edit.
+    processorRef.setEditorSize (getWidth(), getHeight());
 }

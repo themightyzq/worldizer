@@ -137,6 +137,29 @@ public:
     bool getSidebarCollapsed() const noexcept { return sidebarCollapsed.load(); }
     void setSidebarCollapsed (bool shouldBeCollapsed) { sidebarCollapsed.store (shouldBeCollapsed); }
 
+    // === Editor window size persistence (persisted in plugin state) ===
+    // 0 means "never set — use the editor's own default size". Stored on the
+    // processor (the editor is transient and can be destroyed/recreated by the
+    // host) so a resized window survives close/reopen. Not preset data — window
+    // size is session state, like sidebarCollapsed above.
+    int  getEditorWidth() const noexcept  { return editorWidth.load(); }
+    int  getEditorHeight() const noexcept { return editorHeight.load(); }
+    void setEditorSize (int width, int height) noexcept
+    {
+        editorWidth.store (width);
+        editorHeight.store (height);
+    }
+
+    /** Called by the editor when the PresetBrowser renames the CURRENTLY LOADED
+        user preset. Updates the processor's bookkeeping id (and cached metadata
+        name) in place — an identity update only, NOT a preset switch: it does
+        not reload from disk, re-render, or touch the dirty/shell-converted
+        flags, because the on-disk scene itself hasn't changed. No-op if
+        `oldId` no longer matches the currently loaded preset (e.g. the user
+        switched presets while the rename dialog was open). Message thread. */
+    void notifyCurrentPresetRenamed (const juce::String& oldId, const juce::String& newId,
+                                     const juce::String& newName);
+
     // === Room-shell conversion (make the preset's own walls editable) ===
     /** Converts the current preset's brush-built room shell into an editable
         sector (SectorGeometry::convertRoomShell). Called on entering edit mode.
@@ -294,6 +317,8 @@ private:
     juce::String currentPresetId { kDefaultPreset };
     std::optional<Worldizer::WzPresetIO::Loaded> currentPresetMetadata;
     std::atomic<bool> sidebarCollapsed { false };
+    std::atomic<int>  editorWidth { 0 };
+    std::atomic<int>  editorHeight { 0 };
     std::atomic<bool> dirtyFlag { false };
     // True once the current preset's brush shell was converted to a sector.
     // Persisted in state: on restore the freshly-loaded preset still HAS its

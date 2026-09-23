@@ -394,6 +394,21 @@ bool WorldizerAudioProcessor::isRendering() const noexcept
     return renderThread != nullptr && renderThread->isRendering();
 }
 
+void WorldizerAudioProcessor::notifyCurrentPresetRenamed (const juce::String& oldId, const juce::String& newId,
+                                                          const juce::String& newName)
+{
+    const juce::ScopedLock sl (presetLock);
+    if (currentPresetId != oldId)
+        return; // the user switched away from it while the rename dialog was open
+
+    currentPresetId = newId;
+    if (currentPresetMetadata.has_value())
+    {
+        currentPresetMetadata->presetId = newId;
+        currentPresetMetadata->name     = newName;
+    }
+}
+
 // Deprecated Slice 2 shims (mapped onto the preset system).
 juce::String WorldizerAudioProcessor::getCurrentSceneName() const { return getCurrentPresetId(); }
 void WorldizerAudioProcessor::setCurrentSceneName (const juce::String& sceneName) { setCurrentPresetId (sceneNameToPresetId (sceneName)); }
@@ -467,14 +482,9 @@ bool WorldizerAudioProcessor::saveCurrentSceneAsPreset (const juce::String& pres
     if (presetManager == nullptr)            { errorOut = "no preset manager"; return false; }
     if (presetName.trim().isEmpty())         { errorOut = "preset name is empty"; return false; }
 
-    // Generate a filesystem-safe id from the display name (alnum + underscores).
-    juce::String id;
-    for (auto c : presetName.toLowerCase())
-        id += (juce::CharacterFunctions::isLetterOrDigit (c) ? c : '_');
-    id = id.removeCharacters ("/\\:*?\"<>|");
-    while (id.contains ("__")) id = id.replace ("__", "_");
-    id = id.trimCharactersAtStart ("_").trimCharactersAtEnd ("_");
-    if (id.isEmpty()) id = "untitled";
+    // Filesystem-safe id from the display name — shared with PresetManager::renameUserPreset
+    // so renaming a preset to the same name a Save-As would have used lands on the same id.
+    const juce::String id = Worldizer::WzPresetIO::makeSafeId (presetName);
 
     const auto folder    = Worldizer::PresetManager::getUserPresetsFolder();
     folder.createDirectory(); // lazily create the user library on first write
@@ -1418,6 +1428,10 @@ void WorldizerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
     state.setProperty ("sidebarCollapsed", sidebarCollapsed.load(), nullptr);
     state.setProperty ("dirty",             dirtyFlag.load(),       nullptr);
     state.setProperty ("shellConverted",    shellConverted.load(),  nullptr);
+    // Editor window size (QoL): 0x0 if never resized — the editor treats that
+    // as "use the default size". Session state, not preset data.
+    state.setProperty ("editor_width",  editorWidth.load(),  nullptr);
+    state.setProperty ("editor_height", editorHeight.load(), nullptr);
 
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
@@ -1434,6 +1448,12 @@ void WorldizerAudioProcessor::setStateInformation (const void* data, int sizeInB
 
             if (state.hasProperty ("sidebarCollapsed"))
                 sidebarCollapsed.store ((bool) state["sidebarCollapsed"]);
+
+            // Editor window size (QoL). Missing in .beep-derived/older sessions,
+            // which leaves the default 0x0 ("use editor default"); the editor
+            // reads this back in its constructor.
+            setEditorSize ((int) state.getProperty ("editor_width", 0),
+                           (int) state.getProperty ("editor_height", 0));
 
             juce::String presetId;
             if (state.hasProperty ("currentPreset"))

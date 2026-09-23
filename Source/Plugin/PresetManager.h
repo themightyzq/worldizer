@@ -39,6 +39,29 @@ public:
 
     bool hasPreset (const juce::String& presetId) const;
 
+    /** True if presetId is a USER preset (a .wzpreset directory under the user
+        presets folder) rather than an embedded factory preset. Factory presets
+        cannot be renamed or deleted. False if presetId is unknown. */
+    bool isUserPreset (const juce::String& presetId) const;
+
+    /** Renames a user preset in place: renames its `.wzpreset` directory on disk
+        (the directory name IS the preset's id — see PresetEntry::id below) and
+        rewrites the `name` field of its metadata.json, then rescans. Message
+        thread; does file I/O.
+
+        Validates newDisplayName (non-empty, no path separators, no clash with
+        any other preset's display name or the id it would generate —
+        case-insensitive) before touching disk. Fails (false + errorOut) for an
+        unknown id or a factory preset, without touching disk.
+
+        On success, newIdOut is the renamed preset's new id (== new directory
+        name; unchanged from presetId if only the display name's casing/
+        cosmetics changed and the generated id is identical). Callers must
+        treat this as the preset's new identity — e.g. update a processor's
+        currently-loaded-preset id if it was tracking presetId. */
+    bool renameUserPreset (const juce::String& presetId, const juce::String& newDisplayName,
+                           juce::String& newIdOut, juce::String& errorOut);
+
 private:
     struct PresetEntry
     {
