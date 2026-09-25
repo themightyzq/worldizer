@@ -65,6 +65,16 @@ jobs:
           path: build/Worldizer_artefacts/Release/VST3/Worldizer.vst3
           if-no-files-found: error
 
+      - name: Upload Worldizer AU and Standalone (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Worldizer-macOS-AU-Standalone
+          path: |
+            build/Worldizer_artefacts/Release/AU/*.component
+            build/Worldizer_artefacts/Release/Standalone/*.app
+          if-no-files-found: error
+
 # Note: pluginval is intentionally not run in CI (it needs a GUI environment that
 # headless runners don't provide without extra setup). Run it locally:
 #   pluginval --strictness-level 10 --validate <path-to>/Worldizer.vst3
