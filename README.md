@@ -36,8 +36,16 @@ character row for speaker and mic picks plus the ambient bed level.
 
 ## Install
 
-Version 0.0.8. There are no packaged or signed releases yet. Build from source (below);
-the built plugin is unsigned, so on macOS the first launch needs right-click, Open.
+Version 0.0.8. Binary releases are available for download from the
+[v0.0.8 release](https://github.com/themightyzq/worldizer/releases/tag/v0.0.8)
+(Worldizer-VST3-macOS.zip, Worldizer-macOS-AU-Standalone.zip, Worldizer-VST3-Windows.zip,
+Worldizer-VST3-Linux.zip). The built plugin is unsigned, so on macOS the first launch
+needs right-click, Open.
+
+The v0.0.8 downloads were built without the preset rooms and the speaker, mic and
+room-tone files, so their preset browser is empty. Build from source to get them.
+
+Alternatively, build from source (below).
 
 ## Use
 
@@ -85,7 +93,7 @@ restart the plugin.
 
 Platform requirements:
 
-- macOS 10.15+, Xcode Command Line Tools (builds a Universal Binary: arm64 + x86_64)
+- macOS 11.0+, Xcode Command Line Tools (builds a Universal Binary: arm64 + x86_64)
 - Windows: Visual Studio 2022 (MSVC) build tools
 - Linux: GCC/Clang and the JUCE dev packages (ALSA, X11, FreeType, Mesa/GL; see the
   Install Linux dependencies step in `.github/workflows/build.yml`)

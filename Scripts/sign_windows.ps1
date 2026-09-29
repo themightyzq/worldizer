@@ -5,7 +5,7 @@
 # Usage (PFX file):
 #   .\Scripts\sign_windows.ps1 -PfxPath cert.pfx -PfxPassword (Read-Host -AsSecureString)
 # Usage (store, by subject name):
-#   .\Scripts\sign_windows.ps1 -SubjectName "ZQSFX"
+#   .\Scripts\sign_windows.ps1 -SubjectName "ZQ SFX"
 
 param(
     [string]$Vst3Path   = "build\Worldizer_artefacts\Release\VST3\Worldizer.vst3\Contents\x86_64-win\Worldizer.vst3",

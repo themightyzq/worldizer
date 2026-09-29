@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.22)
 # Universal Binary + deployment target for macOS — MUST be set BEFORE project()
 if(APPLE)
     set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Build architectures for macOS")
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15" CACHE STRING "Minimum macOS deployment target")
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS deployment target")
 endif()
 
 # Keep in sync with Source/Shared/Constants.h kVersionString (this is the version
