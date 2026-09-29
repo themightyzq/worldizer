@@ -38,12 +38,63 @@ jobs:
             libfontconfig1-dev \
             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
             libxinerama-dev libxrandr-dev libxrender-dev \
-            libglu1-mesa-dev mesa-common-dev
+            libglu1-mesa-dev mesa-common-dev \
+            xvfb
           # FreeType package was renamed across Ubuntu releases; accept either name.
           sudo apt-get install -y libfreetype-dev || sudo apt-get install -y libfreetype6-dev
 
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      # The shipped presets (Resources/EmbeddedPresets/*.wzpkg) and the speaker / mic /
+      # room-tone WAVs are git-ignored build products: they are embedded into the plugin
+      # only if they exist at configure time. Bake them here so every artifact ships its
+      # content (a bare checkout silently builds WORLDIZER_HAS_SHIPPED_PRESETS=0 and
+      # WORLDIZER_HAS_CHARACTERS=0). Outputs land in Resources/ (tools run from the repo root).
+      - name: Build asset bake tools
+        run: cmake --build build --config Release --parallel 4 --target BakeAssets BakePresets
+
+      # BakePresets initialises JUCE's GUI layer (thumbnail rendering), so Linux runs it under xvfb.
+      - name: Bake character assets and presets
+        shell: bash
+        run: |
+          EXT=""
+          if [ "$RUNNER_OS" = "Windows" ]; then EXT=".exe"; fi
+          "build/BakeAssets_artefacts/Release/BakeAssets$EXT"
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a "build/BakePresets_artefacts/Release/BakePresets$EXT"
+          else
+            "build/BakePresets_artefacts/Release/BakePresets$EXT"
+          fi
+
+      # Re-configure so the CONFIGURE_DEPENDS globs see the freshly baked files.
+      - name: Re-configure (embed baked content)
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      # Fail the job rather than ship a release without its presets / characters.
+      # 25 rooms = 5 test scenes + 20 library scenes; 20 = 8 speakers + 6 mics + 6 room tones.
+      # Building the two binary-data targets fails outright if CMake did not create them,
+      # i.e. if the configure step fell back to WORLDIZER_HAS_*=0.
+      - name: Guard - presets and characters are embedded
+        shell: bash
+        run: |
+          # Bash globs (not find/wc): Windows has its own find.exe / sort.exe in System32.
+          shopt -s nullglob
+          presets_f=(Resources/EmbeddedPresets/*.wzpkg)
+          speakers_f=(Resources/Speakers/*.wav)
+          mics_f=(Resources/Mics/*.wav)
+          tones_f=(Resources/RoomTones/*.wav)
+          presets=${#presets_f[@]}
+          speakers=${#speakers_f[@]}
+          mics=${#mics_f[@]}
+          tones=${#tones_f[@]}
+          echo "presets=$presets speakers=$speakers mics=$mics roomtones=$tones"
+          test "$presets" -ge 25
+          test "$speakers" -ge 1
+          test "$mics" -ge 1
+          test "$tones" -ge 1
+          test $((speakers + mics + tones)) -ge 20
+          cmake --build build --config Release --target WorldizerPresets WorldizerCharacters
 
       # Explicit job count: bare `--parallel` maps to an unbounded `make -j` with the
       # Makefile generator, which OOM-killed cc1plus on the Linux runner (exit 143).
@@ -53,10 +104,40 @@ jobs:
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
 
+      # Belt and braces: the built VST3 must actually contain the embedded preset and
+      # character names (BinaryData keeps them as string literals on every platform).
+      # Thresholds are floors: a stripped Windows DLL has no symbol table, so it yields
+      # exactly 25 preset and 20 character names (macOS also counts symbol names: 62 / 20).
+      - name: Guard - built VST3 contains the presets and characters
+        shell: bash
+        run: |
+          found=0
+          for BIN in $(/usr/bin/find build/Worldizer_artefacts/Release/VST3/Worldizer.vst3 -type f -size +1M); do
+            pk=$(grep -a -o '[a-z_0-9]*_wzpkg' "$BIN" | /usr/bin/sort -u | wc -l)
+            ch=$(grep -a -o '\(spk\|mic\|amb\)_[a-z_0-9]*_wav' "$BIN" | /usr/bin/sort -u | wc -l)
+            echo "$BIN: preset names=$pk character names=$ch"
+            if [ "$pk" -ge 25 ] && [ "$ch" -ge 20 ]; then found=1; fi
+          done
+          test "$found" = 1
+
       # macOS-only: confirm the plugin binary fuses arm64 + x86_64 (Soundminer req).
       - name: Verify Universal Binary
         if: runner.os == 'macOS'
         run: ./Scripts/verify_universal_binary.sh
+
+      - name: Verify universal binary and macOS 11.0 floor (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          for BIN in "build/Worldizer_artefacts/Release/VST3/Worldizer.vst3/Contents/MacOS/Worldizer" \
+                     "build/Worldizer_artefacts/Release/AU/Worldizer.component/Contents/MacOS/Worldizer" \
+                     "build/Worldizer_artefacts/Release/Standalone/Worldizer.app/Contents/MacOS/Worldizer"; do
+            echo "$BIN: $(lipo -archs "$BIN") minos $(otool -l "$BIN" | awk '/minos/{print $2}' | sort -u | tr '\n' ' ')"
+            lipo -archs "$BIN" | grep -q arm64 && lipo -archs "$BIN" | grep -q x86_64
+            test "$(otool -l "$BIN" | awk '/minos/{print $2}' | sort -u)" = "11.0"
+            # A target below 10.14 writes LC_VERSION_MIN_MACOSX (no "minos" line) on x86_64,
+            # which the check above would not see.
+            ! otool -l "$BIN" | grep -q LC_VERSION_MIN_MACOSX
+          done
 
       - name: Upload VST3 artifact
         uses: actions/upload-artifact@v4
