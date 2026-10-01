@@ -944,7 +944,13 @@ void WorldizerAudioProcessorEditor::resized()
     editButton.setBounds   (bypassButton.getX() - 8 - 80, header.getY() + 16, 80, 28);
 
     auto footer = area.removeFromBottom (24);
-    githubLink.setBounds (footer.removeFromRight (260).reduced (8, 4));
+    // JUCE's resize grip is an 18x18 corner component pinned to the editor's bottom-right
+    // (AudioProcessorEditor::resized). Keep the link clear of it, with a 2 px gap, and give it a
+    // 22 px tall hit target (the house floor); it used to be 16 px tall and its right end sat
+    // under the grip.
+    constexpr int resizeGripClearance = 20;
+    footer.removeFromRight (resizeGripClearance);
+    githubLink.setBounds (footer.removeFromRight (260).reduced (8, 1));
 
     // Control area: gain row + mic row + character row.
     controlRowBounds   = area.removeFromBottom (206);
