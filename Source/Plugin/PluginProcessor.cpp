@@ -364,13 +364,12 @@ void WorldizerAudioProcessor::setCurrentPresetId (const juce::String& presetId, 
     if (loaded->ir.getNumSamples() > 0)
     {
         // A preset load is a file read + convolver swap — no tracing. Normally it
-        // goes THROUGH the render thread so the engine only ever has one loading
-        // thread (single-producer command queue). During an offline render,
-        // though, that async hop would let the bounce head render dry — so load
-        // directly (the render thread is drained in prepareToPlay and no audio
-        // runs concurrently, so single-producer still holds).
+        // goes through the render thread, off the message thread and in order with
+        // scene renders. During an offline render, though, that async hop would
+        // let the bounce head render dry — so load directly (the engine
+        // serialises its loaders; see ConvolutionEngine's threading contract).
         if (isNonRealtime())
-            convolution.loadIR (loaded->ir, loaded->irSampleRate, 5.0f);
+            loadRoomIRNow (loaded->ir, loaded->irSampleRate, 5.0f);
         else
             renderThread->requestIRLoad (loaded->ir, loaded->irSampleRate, 80.0f);
     }
@@ -382,7 +381,7 @@ void WorldizerAudioProcessor::setCurrentPresetId (const juce::String& presetId, 
         {
             const auto ir = renderLiveSceneIR();
             if (ir.getNumSamples() > 0)
-                convolution.loadIR (ir, 48000.0, 5.0f);
+                loadRoomIRNow (ir, 48000.0, 5.0f);
         }
         else
             renderCurrentScene (true, 80.0f);
@@ -866,7 +865,14 @@ void WorldizerAudioProcessor::generateTestSignals (double sampleRate)
 }
 
 //==============================================================================
-void WorldizerAudioProcessor::loadEmbeddedDefaultIR()
+void WorldizerAudioProcessor::loadRoomIRNow (const juce::AudioBuffer<float>& ir, double irSampleRate, float crossfadeMs)
+{
+    if (convolution.loadIR (ir, irSampleRate, crossfadeMs) == Worldizer::ConvolutionEngine::LoadResult::busy
+        && renderThread != nullptr)
+        renderThread->requestIRLoad (ir, irSampleRate, crossfadeMs);
+}
+
+void WorldizerAudioProcessor::loadEmbeddedDefaultIR (bool synchronous)
 {
     juce::WavAudioFormat wav;
     auto* rawStream = new juce::MemoryInputStream (WorldizerBinaryData::default_ir_wav,
@@ -878,12 +884,13 @@ void WorldizerAudioProcessor::loadEmbeddedDefaultIR()
         juce::AudioBuffer<float> ir ((int) reader->numChannels, (int) reader->lengthInSamples);
         reader->read (&ir, 0, (int) reader->lengthInSamples, 0, true, true);
 
-        // Queued (not synchronous): the render thread is the engine's ONE
-        // sanctioned loading thread — a direct load here would race it (a
-        // check-then-load was TOCTOU). On a true cold start the thread is idle
-        // and the load lands within milliseconds; whenever a preset/scene IR is
-        // also queued, the one-deep queue correctly lets it win.
-        if (renderThread != nullptr)
+        // Realtime: queued, so the one-deep render queue lets a preset/scene IR
+        // queued right after it win. Offline: direct, like the scene load that
+        // follows it in prepareToPlay — a queued default could otherwise land
+        // AFTER that scene IR and replace it for the whole bounce.
+        if (synchronous)
+            loadRoomIRNow (ir, reader->sampleRate, 5.0f);
+        else if (renderThread != nullptr)
             renderThread->requestIRLoad (ir, reader->sampleRate, 5.0f);
     }
 }
@@ -894,8 +901,9 @@ void WorldizerAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBl
     const int numCh = getTotalNumOutputChannels();
     const juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32) samplesPerBlock, (juce::uint32) numCh };
 
-    // Quiesce the render thread FIRST: it is the room engine's loading thread
-    // and must not be mid-load while the convolvers re-prepare underneath it.
+    // Quiesce the render thread FIRST: drop jobs aimed at the old configuration
+    // (the engine re-arms below). The engine's own lock already keeps a load from
+    // overlapping its re-prepare.
     if (renderThread != nullptr)
         renderThread->drain();
 
@@ -956,8 +964,8 @@ void WorldizerAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBl
     micNoiseValue    = apvts.getRawParameterValue ("micNoise");
     ambientLevelValue = apvts.getRawParameterValue ("ambientLevel");
 
-    // Instant first audio: load the embedded default IR synchronously.
-    loadEmbeddedDefaultIR();
+    // Instant first audio: the embedded default IR (direct when offline).
+    loadEmbeddedDefaultIR (isNonRealtime());
     updateDryDelayToMatchConvolutionLatency();
 
     prepared.store (true);
@@ -1010,7 +1018,7 @@ void WorldizerAudioProcessor::rearmEngineForCurrentScene (bool synchronous)
     // RenderThread hop that would let a bounce head render dry.
     auto loadRoom = [this, synchronous] (const juce::AudioBuffer<float>& ir, double sr, float xf)
     {
-        if (synchronous) convolution.loadIR (ir, sr, xf);
+        if (synchronous) loadRoomIRNow (ir, sr, xf);
         else             renderThread->requestIRLoad (ir, sr, xf);
     };
 
@@ -1052,7 +1060,7 @@ void WorldizerAudioProcessor::rearmEngineForCurrentScene (bool synchronous)
         // uses the right acoustics instead of a stale/starved background render.
         const auto ir = renderLiveSceneIR();
         if (ir.getNumSamples() > 0)
-            convolution.loadIR (ir, 48000.0, 5.0f);
+            loadRoomIRNow (ir, 48000.0, 5.0f);
     }
     else
     {

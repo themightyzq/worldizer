@@ -13,6 +13,8 @@ ConvolutionEngine::~ConvolutionEngine() = default;
 
 void ConvolutionEngine::prepare (double sr, int maximumBlockSize, int channels)
 {
+    const juce::ScopedLock sl (loaderLock); // no load may touch a convolver mid-prepare
+
     sampleRate   = sr;
     maxBlockSize = maximumBlockSize;
     numChannels  = juce::jmax (1, channels);
@@ -34,28 +36,44 @@ void ConvolutionEngine::prepare (double sr, int maximumBlockSize, int channels)
 
     crossfadeActive = false;
     crossfadeRemaining = 0;
-    crossfadeInProgress.store (false);
-    swapRequested.store (false);
+    state.store (idle);
     prepared = true;
 }
 
 void ConvolutionEngine::reset()
 {
+    // Convolution::reset() pushes to the convolver's single-producer command
+    // queue, so it must not overlap a loader's push into the same convolver:
+    // releaseResources() used to run this while the render thread was inside
+    // loadIR(), which corrupted the queue (std::bad_function_call).
+    const juce::ScopedLock sl (loaderLock);
+
     if (convolverA != nullptr) convolverA->reset();
     if (convolverB != nullptr) convolverB->reset();
     crossfadeActive = false;
     crossfadeRemaining = 0;
-    crossfadeInProgress.store (false);
-    swapRequested.store (false);
+    state.store (idle);
 }
 
-void ConvolutionEngine::loadIR (const juce::AudioBuffer<float>& ir, double irSampleRate,
-                                float crossfadeMs, bool normalise)
+ConvolutionEngine::LoadResult ConvolutionEngine::loadIR (const juce::AudioBuffer<float>& ir, double irSampleRate,
+                                                         float crossfadeMs, bool normalise)
 {
-    if (! prepared)
-        return;
+    const juce::ScopedLock sl (loaderLock);
 
-    // Deep copy (this runs on the background thread, so allocation is fine), then
+    if (! prepared)
+        return LoadResult::notPrepared;
+
+    // Take convolverB back out of the audio thread's reach. SwapRequested: the
+    // audio thread has not started on B yet, so retract the request and replace
+    // the queued IR (latest wins). The CAS loses only if the audio thread claimed
+    // B in the meantime, which leaves Crossfading: B is being processed, refuse.
+    // Only a loader (under loaderLock) ever leaves Idle, so Idle here stays Idle.
+    int expected = swapRequested;
+    state.compare_exchange_strong (expected, idle);
+    if (state.load() != idle)
+        return LoadResult::busy;
+
+    // Deep copy (this never runs on the audio thread, so allocation is fine), then
     // load into the idle convolver.
     //
     // Mono IR (1 channel, Stereo::no): the same response is applied independently to
@@ -86,12 +104,13 @@ void ConvolutionEngine::loadIR (const juce::AudioBuffer<float>& ir, double irSam
 
     const int xf = juce::jmax (1, (int) std::round (crossfadeMs * 0.001 * sampleRate));
     crossfadeSamples.store (xf);
-    swapRequested.store (true);
+    state.store (swapRequested); // publishes B (and crossfadeSamples) to the audio thread
+    return LoadResult::loaded;
 }
 
 bool ConvolutionEngine::isIRPending() const noexcept
 {
-    return swapRequested.load() || crossfadeInProgress.load();
+    return state.load() != idle;
 }
 
 void ConvolutionEngine::process (juce::dsp::AudioBlock<float> block)
@@ -99,10 +118,14 @@ void ConvolutionEngine::process (juce::dsp::AudioBlock<float> block)
     if (! prepared)
         return;
 
-    if (swapRequested.exchange (false))
+    // Claim B in ONE atomic step (SwapRequested -> Crossfading). A loader's
+    // retracting CAS on the same variable either wins (we never touch B) or loses
+    // (it sees Crossfading and backs off).
+    int expected = swapRequested;
+    if (! crossfadeActive && state.load() == swapRequested
+        && state.compare_exchange_strong (expected, crossfading))
     {
         crossfadeActive = true;
-        crossfadeInProgress.store (true);
         crossfadeTotal = juce::jmax (1, crossfadeSamples.load());
         crossfadeRemaining = crossfadeTotal;
     }
@@ -153,11 +176,10 @@ void ConvolutionEngine::process (juce::dsp::AudioBlock<float> block)
     {
         crossfadeActive = false;
         std::swap (convolverA, convolverB); // A now holds the new IR
-        // Clear the loader gate ONLY AFTER the swap: loaders poll isIRPending()
-        // and touch convolverB the moment it reads false — clearing first opens
-        // a window where a load lands on the pre-swap pointer and the new IR is
-        // silently faded back out.
-        crossfadeInProgress.store (false);
+        // Hand B back to the loaders ONLY AFTER the swap: a loader touches
+        // convolverB the moment it sees Idle, so releasing first would let a load
+        // land on the pre-swap pointer and the new IR would be faded back out.
+        state.store (idle);
     }
 }
 

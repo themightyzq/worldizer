@@ -21,14 +21,16 @@ namespace Worldizer
     single-producer queue — the race corrupts the FIFO and throws
     bad_function_call (found by pluginval). The double-convolver never loads
     into an instance the audio thread is transitioning, so each queue keeps one
-    producer. Loads are serialized by a one-deep pending slot + timer poll on
-    isIRPending(), so hover-audition can request swaps as fast as the mouse
-    moves and they converge to the latest.
+    producer. A one-deep pending slot holds an IR the engine refused (busy =
+    mid-crossfade) and a timer retries it, so hover-audition can request swaps
+    as fast as the mouse moves and they converge to the latest.
 
     "None" loads a unit impulse (identity convolution) so switching to/from none
     rides the same click-free crossfade path.
 
-    Threading: setIR/setNone message thread; setDrive atomic (any thread);
+    Threading: prepare/setIR/setNone/reset from any non-audio thread
+    (prepareToPlay may run on a host thread while the retry timer fires on the
+    message thread; pendingLock serialises them); setDrive atomic (any thread);
     process() audio-thread only — no allocation, locks, or I/O.
 */
 class SourceCharacter : private juce::Timer
@@ -60,7 +62,8 @@ private:
     ConvolutionEngine engine;
 
     struct PendingIR { juce::AudioBuffer<float> buffer; double sampleRate; };
-    std::optional<PendingIR> pending;   // message-thread only; one-deep, latest wins
+    std::optional<PendingIR> pending;   // guarded by pendingLock; one-deep, latest wins
+    juce::CriticalSection pendingLock;  // prepare / setIR / setNone / timer (never process)
 
     std::atomic<float> driveTarget { 0.0f };
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> driveSmoothed;

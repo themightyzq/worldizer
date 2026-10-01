@@ -39,10 +39,13 @@ void RenderThread::requestIRLoad (const juce::AudioBuffer<float>& ir, double irS
 void RenderThread::drain()
 {
     {
+        // run() pops a job and raises `busy` under this same lock, so after it
+        // there is either no job left or `busy` is already true: no job can slip
+        // past the wait below and start loading while the caller re-prepares.
         const juce::ScopedLock sl (jobLock);
         pendingJob = nullptr;
+        abortWait.store (true);
     }
-    abortWait.store (true);
     while (busy.load() && ! threadShouldExit())
         juce::Thread::sleep (1);
     abortWait.store (false);
@@ -90,21 +93,18 @@ void RenderThread::run()
         {
             const juce::ScopedLock sl (jobLock);
             job = std::move (pendingJob);
+            if (job != nullptr)
+                busy.store (true); // drain() gate — covers the WHOLE job, both kinds
         }
 
         if (job == nullptr)
             continue;
 
-        busy.store (true); // drain() gate — covers the WHOLE job, both kinds
-
         // Pre-baked IR: no trace, just the gated hand-off (fast, so no
         // "rendering..." indicator).
         if (job->bakedIR.getNumSamples() > 0)
         {
-            while (engine.isIRPending() && ! threadShouldExit() && ! abortWait.load())
-                juce::Thread::sleep (2);
-            if (! threadShouldExit() && ! abortWait.load())
-                engine.loadIR (job->bakedIR, job->bakedIRSampleRate, job->crossfadeMs);
+            handOff (job->bakedIR, job->bakedIRSampleRate, job->crossfadeMs);
             busy.store (false);
             continue;
         }
@@ -154,17 +154,37 @@ void RenderThread::run()
             lastFullRender.sceneSignature = signature;
         }
 
-        // Don't clobber the idle convolver mid-crossfade. abortWait covers
-        // drain() — including when audio is stopped and the crossfade would
-        // never complete on its own.
-        while (engine.isIRPending() && ! threadShouldExit() && ! abortWait.load())
-            juce::Thread::sleep (2);
-
-        if (! threadShouldExit() && ! abortWait.load())
-            engine.loadIR (ir, 48000.0, job->crossfadeMs);
-
+        // The trace is done: clear the indicator BEFORE the hand-off, which can
+        // wait on the audio thread (a crossfade only advances while the host
+        // calls processBlock).
         rendering.store (false);
+
+        handOff (ir, 48000.0, job->crossfadeMs);
         busy.store (false);
+    }
+}
+
+void RenderThread::handOff (const juce::AudioBuffer<float>& ir, double irSampleRate, float crossfadeMs)
+{
+    // The engine refuses only while the audio thread is mid-crossfade (a queued
+    // but unstarted swap is replaced, never waited on). Retry until it accepts,
+    // unless this IR is superseded by a newer job (latest wins: drop it), drain()
+    // aborts, or the thread is stopping.
+    for (;;)
+    {
+        if (threadShouldExit() || abortWait.load())
+            return;
+
+        if (engine.loadIR (ir, irSampleRate, crossfadeMs) != ConvolutionEngine::LoadResult::busy)
+            return;
+
+        {
+            const juce::ScopedLock sl (jobLock);
+            if (pendingJob != nullptr)
+                return;
+        }
+
+        juce::Thread::sleep (2);
     }
 }
 } // namespace Worldizer

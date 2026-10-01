@@ -17,7 +17,12 @@ namespace
 
 void SourceCharacter::prepare (const juce::dsp::ProcessSpec& spec)
 {
-    stopTimer();      // no pending-IR flush may land while the engine re-prepares
+    // prepareToPlay can run on a host thread while this object's timer fires on
+    // the message thread (pluginval does exactly that). stopTimer() does not wait
+    // for a callback already in flight, so the lock is what keeps a flush from
+    // landing while the engine re-prepares.
+    const juce::ScopedLock sl (pendingLock);
+    stopTimer();
     pending.reset();
 
     sampleRate = spec.sampleRate;
@@ -37,6 +42,7 @@ void SourceCharacter::reset()
 
 void SourceCharacter::setIR (juce::AudioBuffer<float>&& ir, double irSampleRate)
 {
+    const juce::ScopedLock sl (pendingLock);
     if (ir.getNumSamples() <= 0)
     {
         setNone();
@@ -47,11 +53,13 @@ void SourceCharacter::setIR (juce::AudioBuffer<float>&& ir, double irSampleRate)
 
 void SourceCharacter::setNone()
 {
+    const juce::ScopedLock sl (pendingLock);
     requestIR (makeUnitImpulse(), sampleRate);
 }
 
 void SourceCharacter::requestIR (juce::AudioBuffer<float>&& ir, double irSampleRate)
 {
+    // Caller holds pendingLock.
     pending = PendingIR { std::move (ir), irSampleRate };
     flushPendingIfIdle();
     if (pending.has_value())
@@ -60,16 +68,21 @@ void SourceCharacter::requestIR (juce::AudioBuffer<float>&& ir, double irSampleR
 
 void SourceCharacter::flushPendingIfIdle()
 {
-    if (! prepared || ! pending.has_value() || engine.isIRPending())
+    // Caller holds pendingLock.
+    if (! prepared || ! pending.has_value())
         return;
     // normalise=false: character IRs are unit-energy at bake (the "none" delta's
     // energy is exactly 1), so they pass at unity loudness — see ConvolutionEngine.
-    engine.loadIR (pending->buffer, pending->sampleRate, kCharacterCrossfadeMs, false);
-    pending.reset();
+    // busy = a crossfade is running on the audio thread: keep the IR pending and
+    // let the timer retry. Anything else consumes it.
+    if (engine.loadIR (pending->buffer, pending->sampleRate, kCharacterCrossfadeMs, false)
+            != ConvolutionEngine::LoadResult::busy)
+        pending.reset();
 }
 
 void SourceCharacter::timerCallback()
 {
+    const juce::ScopedLock sl (pendingLock);
     flushPendingIfIdle();
     if (! pending.has_value())
         stopTimer();

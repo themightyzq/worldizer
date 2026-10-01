@@ -215,7 +215,13 @@ public:
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     void renderCurrentScene (bool fullQuality, float crossfadeMs);
-    void loadEmbeddedDefaultIR();
+    void loadEmbeddedDefaultIR (bool synchronous);
+
+    /** Loads a room IR straight into the engine (offline paths, so a bounce head
+        never renders through a stale IR). If the audio thread is mid-crossfade
+        the engine refuses; the IR then goes through the render thread instead of
+        being dropped. */
+    void loadRoomIRNow (const juce::AudioBuffer<float>& ir, double irSampleRate, float crossfadeMs);
     void updateDryDelayToMatchConvolutionLatency();
     static juce::String sceneNameToPresetId (const juce::String& sceneName);
 

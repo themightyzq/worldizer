@@ -20,8 +20,9 @@ namespace Worldizer
     generation => seamless), added post-IR at a smoothed user level. 0 = off
     (bit-exact skip).
 
-    Threading: setIR/setNone message thread; setSelfNoise atomic (any thread);
-    process() audio-thread only — no allocation, locks, or I/O.
+    Threading: prepare/setIR/setNone/reset from any non-audio thread
+    (pendingLock serialises them against the retry timer); setSelfNoise atomic
+    (any thread); process() audio-thread only — no allocation, locks, or I/O.
 */
 class MicCharacter : private juce::Timer
 {
@@ -52,7 +53,8 @@ private:
     ConvolutionEngine engine;
 
     struct PendingIR { juce::AudioBuffer<float> buffer; double sampleRate; };
-    std::optional<PendingIR> pending;   // message-thread only; one-deep, latest wins
+    std::optional<PendingIR> pending;   // guarded by pendingLock; one-deep, latest wins
+    juce::CriticalSection pendingLock;  // prepare / setIR / setNone / timer (never process)
 
     std::atomic<float> noiseTarget { 0.0f };  // linear gain
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> noiseSmoothed;

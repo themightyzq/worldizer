@@ -593,6 +593,41 @@ target_link_libraries(AmbientBedTest
         juce::juce_recommended_warning_flags
 )
 
+# === IR hand-off threading: loaders vs audio vs host prepare/reset (bad_function_call regression) ===
+juce_add_console_app(EngineThreadingTest PRODUCT_NAME "EngineThreadingTest")
+juce_generate_juce_header(EngineThreadingTest)
+target_sources(EngineThreadingTest
+    PRIVATE
+        Tests/engine_threading_test.cpp
+        Source/DSP/ConvolutionEngine.cpp
+        Source/DSP/SourceCharacter.cpp
+        Source/Plugin/RenderThread.cpp
+        Source/Model/Material.cpp
+        Source/Model/Brush.cpp
+        Source/Model/SourceNode.cpp
+        Source/Model/MicNode.cpp
+        Source/Model/MicArray.cpp
+        Source/Model/Sector.cpp
+        Source/Model/SectorGeometry.cpp
+        Source/Model/MaterialResolver.cpp
+        Source/Model/Scene.cpp
+        Source/Model/TestScenes.cpp
+        Source/DSP/RayTracer.cpp
+        Source/DSP/IRBuilder.cpp
+        Source/DSP/AirAbsorption.cpp
+)
+target_compile_definitions(EngineThreadingTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(EngineThreadingTest
+    PRIVATE
+        juce::juce_audio_formats
+        juce::juce_audio_basics
+        juce::juce_core
+        juce::juce_events
+        juce::juce_dsp
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
 # === User-preset migration from the legacy "ZQSFX" company folder ===
 juce_add_console_app(PresetMigrationTest PRODUCT_NAME "PresetMigrationTest")
 juce_generate_juce_header(PresetMigrationTest)
@@ -644,7 +679,8 @@ foreach(wz_test
         CharacterTest
         AmbientBedTest
         ShellConvertTest
-        PresetMigrationTest)
+        PresetMigrationTest
+        EngineThreadingTest)
     add_test(NAME ${wz_test} COMMAND ${wz_test})
 endforeach()
 
