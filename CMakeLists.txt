@@ -8,7 +8,7 @@ endif()
 
 # Keep in sync with Source/Shared/Constants.h kVersionString (this is the version
 # JUCE reports to hosts).
-project(Worldizer VERSION 0.0.9)
+project(Worldizer VERSION 0.0.10)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
