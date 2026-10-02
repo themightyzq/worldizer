@@ -21,7 +21,7 @@ add_subdirectory(JUCE)
 include(FetchContent)
 FetchContent_Declare(zqsfx_ui
     GIT_REPOSITORY https://github.com/themightyzq/zqsfx_ui.git
-    GIT_TAG v0.4.0
+    GIT_TAG v0.5.0
     GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(zqsfx_ui)
 
@@ -663,6 +663,26 @@ target_link_libraries(worldizer_ui_snapshot
         juce::juce_recommended_warning_flags)
 target_compile_definitions(worldizer_ui_snapshot PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 
+# === Editor controls test: every slider is a house Dial with a keyboard step and a default ===
+# Same wiring as worldizer_ui_snapshot above (it opens the real editor headlessly). It needs a
+# window server off macOS, so it reports "skipped" (exit 77) there.
+juce_add_console_app(EditorControlsTest PRODUCT_NAME "EditorControlsTest")
+target_sources(EditorControlsTest PRIVATE Tests/editor_controls_test.cpp)
+target_include_directories(EditorControlsTest PRIVATE
+    Source
+    $<TARGET_PROPERTY:Worldizer,JUCE_GENERATED_SOURCES_DIRECTORY>)
+target_link_libraries(EditorControlsTest
+    PRIVATE
+        Worldizer
+        WorldizerBinaryData
+        zqsfx::ui
+        juce::juce_audio_utils
+        juce::juce_dsp
+        juce::juce_opengl
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags)
+target_compile_definitions(EditorControlsTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+
 # === Test registration (CTest) ===
 # Wire the assertion-based console tests into CTest so `ctest` (locally and in CI)
 # runs them. Each returns 0 on pass / nonzero on fail (e.g. `return ok ? 0 : 1`).
@@ -680,7 +700,9 @@ foreach(wz_test
         AmbientBedTest
         ShellConvertTest
         PresetMigrationTest
-        EngineThreadingTest)
+        EngineThreadingTest
+        EditorControlsTest)
     add_test(NAME ${wz_test} COMMAND ${wz_test})
 endforeach()
+set_tests_properties(EditorControlsTest PROPERTIES SKIP_RETURN_CODE 77)
 

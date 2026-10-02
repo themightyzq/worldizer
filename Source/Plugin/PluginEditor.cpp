@@ -105,9 +105,14 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
     setupKnob (inputGainSlider,  inputGainLabel,  "Input Gain",  "Gain applied before the worldizing chain.");
     setupKnob (mixSlider,        mixLabel,        "Mix",         "Blend between dry input (0%) and worldized output (100%).");
     setupKnob (outputGainSlider, outputGainLabel, "Output Gain", "Gain applied after the worldizing chain.");
+    // SliderParameterAttachment already sets the double-click value; the explicit call keeps the
+    // house behaviour stated here rather than relying on a JUCE detail.
     inputGainAttach  = std::make_unique<juce::SliderParameterAttachment> (*p.apvts.getParameter ("inputGain"),  inputGainSlider);
+    zqsfx::ui::setDoubleClickDefault (inputGainSlider, *p.apvts.getParameter ("inputGain"));
     mixAttach        = std::make_unique<juce::SliderParameterAttachment> (*p.apvts.getParameter ("mix"),        mixSlider);
+    zqsfx::ui::setDoubleClickDefault (mixSlider, *p.apvts.getParameter ("mix"));
     outputGainAttach = std::make_unique<juce::SliderParameterAttachment> (*p.apvts.getParameter ("outputGain"), outputGainSlider);
+    zqsfx::ui::setDoubleClickDefault (outputGainSlider, *p.apvts.getParameter ("outputGain"));
 
     // --- Audition buttons ---
     auto setupAudition = [this] (juce::TextButton& b, int index, const juce::String& sig)
@@ -195,6 +200,7 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
     xyAngleSlider.setRange (30.0, 180.0, 1.0);
     xyAngleSlider.setTextValueSuffix (juce::String::fromUTF8 ("\xc2\xb0"));
     xyAngleSlider.setValue (90.0, juce::dontSendNotification);
+    zqsfx::ui::setDoubleClickDefault (xyAngleSlider, 90.0);   // MicArray default: 90 degrees between the capsules
     xyAngleSlider.setTooltip ("Angle between the two XY capsules. Wider = broader stereo image.");
     xyAngleSlider.setTitle ("XY Angle");
     xyAngleSlider.setDescription ("Angle between the two XY capsules.");
@@ -221,6 +227,7 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
     rotateSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 56, 16);
     rotateSlider.setRange (0.0, 360.0, 1.0);
     rotateSlider.setTextValueSuffix (juce::String::fromUTF8 ("\xc2\xb0"));
+    zqsfx::ui::setDoubleClickDefault (rotateSlider, 180.0);   // MicNode default facing is -X = azimuth 180 (not a parameter)
     rotateSlider.setTooltip ("Rotate the selected directional mic (or drag its arrow in the room view).");
     rotateSlider.setTitle ("Rotate");
     rotateSlider.setDescription ("Rotate the selected directional mic.");
@@ -306,8 +313,11 @@ WorldizerAudioProcessorEditor::WorldizerAudioProcessorEditor (WorldizerAudioProc
     setupSmallKnob (ambientSlider, ambientLabel, "Bed",
                     "Level of the preset's ambient room-tone bed (Off = no bed).");
     driveAttach   = std::make_unique<juce::SliderParameterAttachment> (*p.apvts.getParameter ("sourceDrive"),  driveSlider);
+    zqsfx::ui::setDoubleClickDefault (driveSlider, *p.apvts.getParameter ("sourceDrive"));
     noiseAttach   = std::make_unique<juce::SliderParameterAttachment> (*p.apvts.getParameter ("micNoise"),     noiseSlider);
+    zqsfx::ui::setDoubleClickDefault (noiseSlider, *p.apvts.getParameter ("micNoise"));
     ambientAttach = std::make_unique<juce::SliderParameterAttachment> (*p.apvts.getParameter ("ambientLevel"), ambientSlider);
+    zqsfx::ui::setDoubleClickDefault (ambientSlider, *p.apvts.getParameter ("ambientLevel"));
 
     // === Edit-mode UI wiring (Slice 6a) — components are hidden until setEditMode(true) ===
     addChildComponent (editorTools);

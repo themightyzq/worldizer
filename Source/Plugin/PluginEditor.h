@@ -60,7 +60,7 @@ private:
     Worldizer::RoomView2D    roomView;
 
     // Control row 1: gain knobs + audition + indicator
-    juce::Slider inputGainSlider, mixSlider, outputGainSlider;
+    zqsfx::ui::Dial inputGainSlider, mixSlider, outputGainSlider;
     juce::Label  inputGainLabel, mixLabel, outputGainLabel;
     juce::TextButton clickButton { "Click" }, clicksButton { "Clicks" }, sweepButton { "Sweep" }, noiseButton { "Noise" };
     juce::Label  renderingIndicator;
@@ -68,13 +68,13 @@ private:
     // Control row 2: mic array configuration / pattern / XY angle / rotate
     juce::Label    micSectionLabel, micConfigLabel, micPatternLabel, xyAngleLabel, rotateLabel;
     juce::ComboBox micConfigCombo, micPatternCombo;
-    juce::Slider   xyAngleSlider, rotateSlider;
+    zqsfx::ui::Dial xyAngleSlider, rotateSlider;
 
     // Control row 3 (Slices 5.5/6): character pickers + drive/noise/ambient knobs
     juce::Label  speakerSectionLabel, micCharSectionLabel, ambientSectionLabel;
     Worldizer::CharacterPicker speakerPicker { Worldizer::CharacterLibrary::speakers() };
     Worldizer::CharacterPicker micCharPicker { Worldizer::CharacterLibrary::mics() };
-    juce::Slider driveSlider, noiseSlider, ambientSlider;
+    zqsfx::ui::Dial driveSlider, noiseSlider, ambientSlider;
     juce::Label  driveLabel, noiseLabel, ambientLabel;
 
     // Footer
