@@ -15,8 +15,8 @@ namespace Worldizer
     // Version
     constexpr int  kVersionMajor       = 0;
     constexpr int  kVersionMinor       = 0;
-    constexpr int  kVersionPatch       = 10;
-    constexpr auto kVersionString      = "0.0.10";
+    constexpr int  kVersionPatch       = 11;
+    constexpr auto kVersionString      = "0.0.11";
 
     // Window
     constexpr int  kDefaultWindowWidth  = 900;

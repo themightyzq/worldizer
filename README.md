@@ -36,8 +36,8 @@ character row for speaker and mic picks plus the ambient bed level.
 
 ## Install
 
-Version 0.0.10. Binary releases are available for download from the
-[v0.0.10 release](https://github.com/themightyzq/worldizer/releases/tag/v0.0.10)
+Version 0.0.11. Binary releases are available for download from the
+[v0.0.11 release](https://github.com/themightyzq/worldizer/releases/tag/v0.0.11)
 (Worldizer-VST3-macOS.zip, Worldizer-macOS-AU-Standalone.zip, Worldizer-VST3-Windows.zip,
 Worldizer-VST3-Linux.zip). The built plugin is unsigned, so on macOS the first launch
 needs right-click, Open.
